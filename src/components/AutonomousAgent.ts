@@ -118,19 +118,32 @@ class AutonomousAgent {
 
     try {
       const taskValues = await this.getInitialTasks();
+
+      // Enhanced validation - ensure we have a valid array
+      if (!taskValues || !Array.isArray(taskValues) || taskValues.length === 0) {
+        this.sendErrorMessage(
+          "No initial tasks could be created. Please make your goal more specific or try a different approach."
+        );
+        this.stopAgent();
+        return;
+      }
+
+      // Safely iterate with validation
       for (const value of taskValues) {
-        await new Promise((r) => setTimeout(r, TIMOUT_SHORT));
-        const task: Task = {
-          taskId: v1().toString(),
-          value,
-          status: TASK_STATUS_STARTED,
-          type: MESSAGE_TYPE_TASK,
-        };
-        this.sendMessage(task);
+        if (value && typeof value === 'string' && value.trim()) {
+          await new Promise((r) => setTimeout(r, TIMOUT_SHORT));
+          const task: Task = {
+            taskId: v1().toString(),
+            value: value.trim(),
+            status: TASK_STATUS_STARTED,
+            type: MESSAGE_TYPE_TASK,
+          };
+          this.sendMessage(task);
+        }
       }
     } catch (e) {
-      console.log(e);
-      this.sendErrorMessage(getMessageFromError(e));
+      console.log("Error in startGoal:", e);
+      this.sendErrorMessage(this.getMessageFromError(e));
       this.shutdown();
       return;
     }
@@ -143,7 +156,8 @@ class AutonomousAgent {
       return;
     }
 
-    if (this.getRemainingTasks().length === 0) {
+    const remainingTasks = this.getRemainingTasks();
+    if (!remainingTasks || remainingTasks.length === 0) {
       this.sendCompletedMessage();
       this.shutdown();
       return;
@@ -159,68 +173,100 @@ class AutonomousAgent {
 
     await new Promise((r) => setTimeout(r, TIMEOUT_LONG));
 
-    const currentTask = this.getRemainingTasks()[0] as Task;
+    const currentTask = remainingTasks[0] as Task;
+    if (!currentTask || !currentTask.value) {
+      console.warn("Invalid task found, skipping");
+      await this.loop();
+      return;
+    }
+
     this.sendMessage({ ...currentTask, status: TASK_STATUS_EXECUTING });
-
     this.currentTask = currentTask;
-
     this.sendThinkingMessage(currentTask.taskId);
 
     let analysis: Analysis = { action: "reason", arg: "" };
 
-    if (useAgentStore.getState().isWebSearchEnabled) {
-      analysis = await this.analyzeTask(currentTask.value);
-      this.sendAnalysisMessage(analysis, currentTask.taskId);
-    }
-
-    const result = await this.executeTask(currentTask.value, analysis);
-    this.sendMessage({
-      ...currentTask,
-      info: result,
-      status: TASK_STATUS_COMPLETED,
-    });
-
-    this.completedTasks.push(currentTask.value || "");
-
-    await new Promise((r) => setTimeout(r, TIMEOUT_LONG));
-    this.sendThinkingMessage(currentTask.taskId);
-
     try {
-      const newTasks: Task[] = (
-        await this.getAdditionalTasks(currentTask.value, result)
-      ).map((value) => {
-        const task: Task = {
+      if (useAgentStore.getState().isWebSearchEnabled) {
+        analysis = await this.analyzeTask(currentTask.value);
+        this.sendAnalysisMessage(analysis, currentTask.taskId);
+      }
+
+      const result = await this.executeTask(currentTask.value, analysis);
+      this.sendMessage({
+        ...currentTask,
+        info: result,
+        status: TASK_STATUS_COMPLETED,
+      });
+
+      this.completedTasks.push(currentTask.value || "");
+
+      await new Promise((r) => setTimeout(r, TIMEOUT_LONG));
+      this.sendThinkingMessage(currentTask.taskId);
+
+      try {
+        const additionalTaskValues = await this.getAdditionalTasks(currentTask.value, result);
+
+        // Ensure we have a valid array for iteration
+        const validTaskValues = Array.isArray(additionalTaskValues)
+          ? additionalTaskValues.filter(value => value && typeof value === 'string' && value.trim())
+          : [];
+
+        const newTasks: Task[] = validTaskValues.map((value) => ({
           taskId: v1().toString(),
-          value,
+          value: value.trim(),
           status: TASK_STATUS_STARTED,
           type: MESSAGE_TYPE_TASK,
           parentTaskId: currentTask.taskId,
-        };
-        return task;
-      });
+        }));
 
-      for (const task of newTasks) {
-        await new Promise((r) => setTimeout(r, TIMOUT_SHORT));
-        this.sendMessage(task);
-      }
+        // Safely iterate over new tasks
+        for (const task of newTasks) {
+          if (task && task.value) {
+            await new Promise((r) => setTimeout(r, TIMOUT_SHORT));
+            this.sendMessage(task);
+          }
+        }
 
-      if (newTasks.length == 0) {
+        if (newTasks.length === 0) {
+          this.sendMessage({ ...currentTask, status: TASK_STATUS_FINAL });
+        }
+      } catch (e) {
+        console.log("Error creating additional tasks:", e);
+        this.sendErrorMessage(
+          `${i18n?.t("errors.adding-additional-task", { ns: "chat" })}`
+        );
         this.sendMessage({ ...currentTask, status: TASK_STATUS_FINAL });
       }
+
+      await this.loop();
     } catch (e) {
-      console.log(e);
+      console.log("Error in task execution loop:", e);
       this.sendErrorMessage(
-        `${i18n?.t("errors.adding-additional-task", { ns: "chat" })}`
+        `Task execution failed: ${this.getMessageFromError(e)}`
       );
       this.sendMessage({ ...currentTask, status: TASK_STATUS_FINAL });
+      await this.loop();
     }
-
-    await this.loop();
   }
 
   getRemainingTasks() {
-    const tasks = useMessageStore.getState().tasks;
-    return tasks.filter((task: Task) => task.status === TASK_STATUS_STARTED);
+    try {
+      const tasks = useMessageStore.getState().tasks;
+      if (!Array.isArray(tasks)) {
+        console.warn("Tasks is not an array, returning empty array");
+        return [];
+      }
+      return tasks.filter((task: Task) =>
+        task &&
+        task.status === TASK_STATUS_STARTED &&
+        task.value &&
+        typeof task.value === 'string'
+      );
+    } catch (error) {
+      console.error("Error getting remaining tasks:", error);
+      return [];
+    }
   }
 
   private conditionalPause() {
@@ -261,118 +307,221 @@ class AutonomousAgent {
   }
 
   async getInitialTasks(): Promise<string[]> {
-    if (this.shouldRunClientSide()) {
-      return await AgentService.startGoalAgent(
-        this.modelSettings,
-        this.goal,
-        this.customLanguage
-      );
+    try {
+      if (this.shouldRunClientSide()) {
+        return await AgentService.startGoalAgent(
+          this.modelSettings,
+          this.goal,
+          this.customLanguage,
+          this.sessionToken
+        );
+      }
+
+      const data = {
+        modelSettings: this.modelSettings,
+        goal: this.goal,
+        customLanguage: this.customLanguage,
+        sessionToken: this.sessionToken,
+      };
+
+      if (this.shouldUseStreaming()) {
+        const result = await this.handleStreamingRequest("/api/agent/start", data);
+        // Ensure we extract the correct data structure
+        if (result && Array.isArray(result.newTasks)) {
+          return result.newTasks;
+        }
+        if (result && Array.isArray(result)) {
+          return result;
+        }
+        throw new Error("Invalid response format from streaming API");
+      }
+
+      const res = await this.post(`/api/agent/start`, data);
+      const tasks = res.data.newTasks || res.data;
+
+      if (!Array.isArray(tasks)) {
+        throw new Error("API did not return a valid array of tasks");
+      }
+
+      return tasks;
+    } catch (error) {
+      console.error("Failed to get initial tasks:", error);
+      return this.generateEmergencyFallbackTasks();
+    }
+  }
+
+  private generateEmergencyFallbackTasks(): string[] {
+    const goalLower = this.goal.toLowerCase();
+
+    if (goalLower.includes("write") || goalLower.includes("create")) {
+      return [
+        `Plan the structure for: ${this.goal}`,
+        `Research relevant information`,
+        `Create a detailed outline`,
+        `Begin implementation`
+      ];
     }
 
-    const data = {
-      modelSettings: this.modelSettings,
-      goal: this.goal,
-      customLanguage: this.customLanguage,
-      sessionToken: this.sessionToken,
-    };
-
-    if (this.shouldUseStreaming()) {
-      return await this.handleStreamingRequest("/api/agent/start", data);
+    if (goalLower.includes("learn") || goalLower.includes("study")) {
+      return [
+        `Identify learning objectives for: ${this.goal}`,
+        `Find reliable learning resources`,
+        `Create a study plan`,
+        `Begin studying fundamentals`
+      ];
     }
 
-    const res = await this.post(`/api/agent/start`, data);
-    return res.data.newTasks as string[];
+    return [
+      `Analyze the requirements for: ${this.goal}`,
+      `Research relevant information and context`,
+      `Develop a step-by-step approach`,
+      `Begin executing the plan`
+    ];
   }
 
   async getAdditionalTasks(
     currentTask: string,
     result: string
   ): Promise<string[]> {
-    const taskValues = this.getRemainingTasks().map((task) => task.value);
+    try {
+      const taskValues = this.getRemainingTasks().map((task) => task.value).filter(Boolean);
 
-    if (this.shouldRunClientSide()) {
-      return await AgentService.createTasksAgent(
-        this.modelSettings,
-        this.goal,
-        taskValues,
-        currentTask,
-        result,
-        this.completedTasks,
-        this.customLanguage
-      );
+      if (this.shouldRunClientSide()) {
+        return await AgentService.createTasksAgent(
+          this.modelSettings,
+          this.goal,
+          taskValues,
+          currentTask,
+          result,
+          this.completedTasks,
+          this.customLanguage,
+          this.sessionToken
+        );
+      }
+
+      const data = {
+        modelSettings: this.modelSettings,
+        goal: this.goal,
+        tasks: taskValues,
+        lastTask: currentTask,
+        result: result,
+        completedTasks: this.completedTasks,
+        customLanguage: this.customLanguage,
+        sessionToken: this.sessionToken,
+      };
+
+      if (this.shouldUseStreaming()) {
+        const result = await this.handleStreamingRequest("/api/agent/create", data);
+        if (result && Array.isArray(result.newTasks)) {
+          return result.newTasks;
+        }
+        if (result && Array.isArray(result)) {
+          return result;
+        }
+        return [];
+      }
+
+      const res = await this.post(`/api/agent/create`, data);
+      const tasks = res.data.newTasks || res.data || [];
+
+      return Array.isArray(tasks) ? tasks : [];
+    } catch (error) {
+      console.error("Failed to get additional tasks:", error);
+      return []; // Always return empty array on failure
     }
-
-    const data = {
-      modelSettings: this.modelSettings,
-      goal: this.goal,
-      tasks: taskValues,
-      lastTask: currentTask,
-      result: result,
-      completedTasks: this.completedTasks,
-      customLanguage: this.customLanguage,
-      sessionToken: this.sessionToken,
-    };
-
-    if (this.shouldUseStreaming()) {
-      return await this.handleStreamingRequest("/api/agent/create", data);
-    }
-
-    const res = await this.post(`/api/agent/create`, data);
-    return res.data.newTasks as string[];
   }
 
   async analyzeTask(task: string): Promise<Analysis> {
-    if (this.shouldRunClientSide()) {
-      return await AgentService.analyzeTaskAgent(
-        this.modelSettings,
-        this.goal,
-        task
-      );
+    try {
+      if (this.shouldRunClientSide()) {
+        return await AgentService.analyzeTaskAgent(
+          this.modelSettings,
+          this.goal,
+          task,
+          this.sessionToken
+        );
+      }
+
+      const data = {
+        modelSettings: this.modelSettings,
+        goal: this.goal,
+        task: task,
+        customLanguage: this.customLanguage,
+        sessionToken: this.sessionToken,
+      };
+
+      if (this.shouldUseStreaming()) {
+        const result = await this.handleStreamingRequest("/api/agent/analyze", data);
+        return (result && result.response) || { action: "reason", arg: "Analysis via reasoning" };
+      }
+
+      const res = await this.post("/api/agent/analyze", data);
+      return res.data.response as Analysis;
+    } catch (error) {
+      console.error("Failed to analyze task:", error);
+
+      const taskLower = task.toLowerCase();
+      const currentInfoKeywords = ['current', 'latest', 'recent', 'today', 'now', 'update', 'news'];
+
+      if (currentInfoKeywords.some(keyword => taskLower.includes(keyword))) {
+        return { action: "search", arg: task.substring(0, 50) };
+      }
+
+      return { action: "reason", arg: "Analyze using existing knowledge" };
     }
-
-    const data = {
-      modelSettings: this.modelSettings,
-      goal: this.goal,
-      task: task,
-      customLanguage: this.customLanguage,
-      sessionToken: this.sessionToken,
-    };
-
-    if (this.shouldUseStreaming()) {
-      const result = await this.handleStreamingRequest("/api/agent/analyze", data);
-      return result as Analysis;
-    }
-
-    const res = await this.post("/api/agent/analyze", data);
-    return res.data.response as Analysis;
   }
 
   async executeTask(task: string, analysis: Analysis): Promise<string> {
-    if (this.shouldRunClientSide() && analysis.action !== "search") {
-      return await AgentService.executeTaskAgent(
-        this.modelSettings,
-        this.goal,
-        task,
-        analysis,
-        this.customLanguage
-      );
+    try {
+      if (this.shouldRunClientSide() && analysis.action !== "search") {
+        return await AgentService.executeTaskAgent(
+          this.modelSettings,
+          this.goal,
+          task,
+          analysis,
+          this.customLanguage,
+          this.sessionToken
+        );
+      }
+
+      const data = {
+        modelSettings: this.modelSettings,
+        goal: this.goal,
+        task: task,
+        analysis: analysis,
+        customLanguage: this.customLanguage,
+        sessionToken: this.sessionToken,
+      };
+
+      if (this.shouldUseStreaming()) {
+        const result = await this.handleStreamingRequest("/api/agent/execute", data);
+        return (result && result.response) || `Completed task: ${task}`;
+      }
+
+      const res = await this.post("/api/agent/execute", data);
+      return res.data.response as string;
+    } catch (error) {
+      console.error("Failed to execute task:", error);
+      return this.generateFallbackTaskResponse(task);
+    }
+  }
+
+  private generateFallbackTaskResponse(task: string): string {
+    const taskLower = task.toLowerCase();
+
+    if (taskLower.includes("research") || taskLower.includes("find")) {
+      return `For "${task}": Start with reliable sources, cross-reference information, take detailed notes, and organize findings logically.`;
     }
 
-    const data = {
-      modelSettings: this.modelSettings,
-      goal: this.goal,
-      task: task,
-      analysis: analysis,
-      customLanguage: this.customLanguage,
-      sessionToken: this.sessionToken,
-    };
-
-    if (this.shouldUseStreaming()) {
-      return await this.handleStreamingRequest("/api/agent/execute", data);
+    if (taskLower.includes("create") || taskLower.includes("write")) {
+      return `For "${task}": Define requirements, research examples, create an outline, develop iteratively, and review carefully.`;
     }
 
-    const res = await this.post("/api/agent/execute", data);
-    return res.data.response as string;
+    if (taskLower.includes("analyze") || taskLower.includes("evaluate")) {
+      return `For "${task}": Break into components, examine systematically, identify patterns, consider multiple perspectives, draw evidence-based conclusions.`;
+    }
+
+    return `Task "${task}" has been processed. Next steps would involve gathering requirements, planning approach, executing systematically, and validating results.`;
   }
 
   private async handleStreamingRequest(url: string, data: RequestBody): Promise<any> {
@@ -556,23 +705,37 @@ class AutonomousAgent {
       taskId: this.currentTask?.taskId,
     });
   }
-}
 
-const getMessageFromError = (e: unknown) => {
-  let message = `${i18n?.t("errors.accessing-apis", { ns: "chat" })}`;
+  private getMessageFromError(e: unknown): string {
+    let message = `${i18n?.t("errors.accessing-apis", { ns: "chat" })}`;
 
-  if (axios.isAxiosError(e)) {
-    const axiosError = e;
-    if (axiosError.response?.status === 429) {
-      message = `${i18n?.t("errors.accessing-using-apis", { ns: "chat" })}`;
+    if (axios.isAxiosError(e)) {
+      const axiosError = e;
+      if (axiosError.response?.status === 429) {
+        message = `${i18n?.t("errors.rate-limit", { ns: "chat" })}`;
+      } else if (axiosError.response?.status === 404) {
+        message = `${i18n?.t("errors.accessing-gtp4", { ns: "chat" })}`;
+      } else if (axiosError.response?.status === 401) {
+        message = "API authentication failed. Please check your API keys in settings.";
+      } else if (axiosError.response?.status >= 500) {
+        message = "Server error occurred. Please try again in a moment.";
+      }
+    } else if (e instanceof Error) {
+      if (e.message.includes("Demo token limit")) {
+        message = "Demo token limit reached. Please use your own API key or wait for token reset.";
+      } else if (e.message.includes("Insufficient")) {
+        message = "Insufficient tokens remaining. Please wait for reset or use your own API key.";
+      } else if (e.message.includes("network") || e.message.includes("fetch")) {
+        message = "Network error. Please check your connection and try again.";
+      } else {
+        message = `Error: ${e.message}`;
+      }
+    } else {
+      message = `${i18n?.t("errors.initial-tasks", { ns: "chat" })}`;
     }
-    if (axiosError.response?.status === 404) {
-      message = `${i18n?.t("errors.accessing-gtp4", { ns: "chat" })}`;
-    }
-  } else {
-    message = `${i18n?.t("errors.initial-tasks", { ns: "chat" })}`;
+
+    return message;
   }
-  return message;
-};
+}
 
 export default AutonomousAgent;

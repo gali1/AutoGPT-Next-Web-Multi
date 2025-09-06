@@ -1,4 +1,3 @@
-// @ts-check
 // src/env/schema.mjs
 import { z } from "zod";
 import { v4 } from "uuid";
@@ -70,8 +69,7 @@ export const serverSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_SUBSCRIPTION_PRICE_ID: z.string().optional(),
 
-  UPSTASH_REDIS_REST_URL: z.string().optional(),
-  UPSTASH_REDIS_REST_TOKEN: z.string().optional(),
+  // Rate limiter - now using PostgreSQL only
   RATE_LIMITER_REQUESTS_PER_MINUTE: stringToNumber().optional(),
 });
 
@@ -108,11 +106,8 @@ export const serverEnv = {
   STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
   STRIPE_SUBSCRIPTION_PRICE_ID: process.env.STRIPE_SUBSCRIPTION_PRICE_ID,
 
-  // Rate limiter
-  UPSTASH_REDIS_REST_URL: process.env.UPSTASH_REDIS_REST_URL,
-  UPSTASH_REDIS_REST_TOKEN: process.env.UPSTASH_REDIS_REST_TOKEN,
-  RATE_LIMITER_REQUESTS_PER_MINUTE:
-    process.env.RATE_LIMITER_REQUESTS_PER_MINUTE,
+  // Rate limiter - PostgreSQL based
+  RATE_LIMITER_REQUESTS_PER_MINUTE: process.env.RATE_LIMITER_REQUESTS_PER_MINUTE,
 };
 
 /**

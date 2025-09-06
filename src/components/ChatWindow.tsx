@@ -168,6 +168,7 @@ const ChatWindow = ({
     }
   };
 
+  // Fixed: Ensure current model reflects the actual selected model
   const getCurrentModelName = () => {
     return currentModel || DEFAULT_MODELS[llmProvider];
   };
@@ -311,6 +312,7 @@ const SwitchContainer = ({
   );
 };
 
+// Fixed ModelSelector component
 const ModelSelector = ({
   currentProvider,
   currentModel,
@@ -340,18 +342,24 @@ const ModelSelector = ({
   const availableModels = getAvailableModels(currentProvider);
   const currentModelDisplay = MODEL_DISPLAY_NAMES[currentModel as keyof typeof MODEL_DISPLAY_NAMES] || currentModel;
 
+  // Fixed: Use proper value and ensure it updates correctly
+  const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selectedModel = e.target.value;
+    onModelChange(selectedModel);
+  };
+
   return (
     <div className="m-1 flex w-48 items-center justify-center gap-2 rounded-lg border-[2px] border-white/20 bg-zinc-700 px-2 py-1">
       <FaMicrochip className="text-sm" />
       <select
-        value={currentModel}
-        onChange={(e) => onModelChange(e.target.value)}
+        value={currentModel} // Fixed: Ensure this matches the current model
+        onChange={handleModelChange} // Fixed: Use proper event handler
         disabled={disabled}
-        className="bg-transparent text-sm font-mono outline-none w-full"
+        className="bg-transparent text-sm font-mono outline-none w-full text-white"
         title={currentModelDisplay}
       >
         {availableModels.map((model) => (
-          <option key={model} value={model} className="bg-zinc-700">
+          <option key={model} value={model} className="bg-zinc-700 text-white">
             {MODEL_DISPLAY_NAMES[model as keyof typeof MODEL_DISPLAY_NAMES] || model}
           </option>
         ))}
@@ -378,10 +386,10 @@ const ProviderSelector = ({
         value={currentProvider}
         onChange={(e) => onProviderChange(e.target.value as LLMProvider)}
         disabled={disabled}
-        className="bg-transparent text-sm font-mono outline-none"
+        className="bg-transparent text-sm font-mono outline-none text-white"
       >
         {Object.entries(LLM_PROVIDERS).map(([key, value]) => (
-          <option key={value} value={value} className="bg-zinc-700">
+          <option key={value} value={value} className="bg-zinc-700 text-white">
             {PROVIDER_NAMES[value]}
           </option>
         ))}

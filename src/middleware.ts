@@ -1,3 +1,5 @@
+// src/middleware.ts
+
 import type { NextRequest } from "next/server";
 import { ipAddress } from "@vercel/edge";
 import { isAllowed } from "./server/redis";
@@ -17,17 +19,27 @@ function ipFallback(request: Request) {
 }
 
 async function shouldRateLimit(request: NextRequest): Promise<boolean> {
-  const ip = ipAddress(request) || ipFallback(request);
-  if (!ip) {
+  try {
+    const ip = ipAddress(request) || ipFallback(request);
+    if (!ip) {
+      return false;
+    }
+
+    return !(await isAllowed(ip));
+  } catch (error) {
+    console.error("Rate limiting check failed:", error);
+    // On error, allow request to prevent blocking legitimate traffic
     return false;
   }
-
-  return !(await isAllowed(ip));
 }
 
 const rateLimitedResponse = () =>
   new Response("Too many requests, please try again later.", {
     status: 429,
+    headers: {
+      "Content-Type": "text/plain",
+      "Retry-After": "60",
+    },
   });
 
 // noinspection JSUnusedGlobalSymbols

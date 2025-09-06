@@ -18,7 +18,6 @@ export const DefaultAnalysis: Analysis = {
 
 // Token estimation utility
 function estimateTokens(text: string): number {
-  // Rough estimation: ~4 characters per token
   return Math.ceil(text.length / 4);
 }
 
@@ -47,7 +46,7 @@ async function retryWithBackoff<T>(
   throw lastError!;
 }
 
-// Multi-provider LLM client with enhanced error handling
+// Multi-provider LLM client with proper streaming support
 class MultiProviderLLM {
   private modelSettings: ModelSettings;
   private sessionToken?: string;
@@ -135,84 +134,8 @@ class MultiProviderLLM {
     }
   }
 
-  private async makeApiRequest(messages: any[]): Promise<string> {
-    const provider = this.modelSettings.llmProvider || "groq";
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
-
-    try {
-      let response: Response;
-
-      if (provider === "cohere") {
-        response = await this.makeCohereRequest(messages, controller.signal);
-      } else {
-        // Standard OpenAI-compatible API for Groq and OpenRouter
-        response = await fetch(this.getEndpoint(), {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${this.getApiKey()}`,
-            "Content-Type": "application/json",
-            ...(provider === "openrouter" && {
-              "HTTP-Referer": env.NEXT_PUBLIC_VERCEL_URL || "http://localhost:3000",
-              "X-Title": "AutoGPT Next Web",
-            }),
-          },
-          body: JSON.stringify({
-            model: this.getModelName(),
-            messages,
-            temperature: this.modelSettings.customTemperature || 0.9,
-            max_tokens: this.modelSettings.customMaxTokens || 400,
-            stream: false,
-          }),
-          signal: controller.signal,
-        });
-      }
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => `HTTP ${response.status}`);
-        throw new Error(`${provider} API error: ${response.status} - ${errorText}`);
-      }
-
-      const data = await response.json();
-
-      if (provider === "cohere") {
-        return data.text || "";
-      } else {
-        return data.choices?.[0]?.message?.content || "";
-      }
-    } catch (error) {
-      clearTimeout(timeoutId);
-      throw error;
-    }
-  }
-
-  private async makeCohereRequest(messages: any[], signal: AbortSignal): Promise<Response> {
-    const lastMessage = messages[messages.length - 1];
-    const chatHistory = messages.slice(0, -1).map(msg => ({
-      role: msg.role === "assistant" ? "CHATBOT" : "USER",
-      message: msg.content,
-    }));
-
-    return fetch(this.getEndpoint(), {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.getApiKey()}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.getModelName(),
-        message: lastMessage.content,
-        chat_history: chatHistory,
-        temperature: this.modelSettings.customTemperature || 0.9,
-        max_tokens: this.modelSettings.customMaxTokens || 400,
-      }),
-      signal,
-    });
-  }
-
-  async call(prompt: string, variables: Record<string, any> = {}): Promise<string> {
+  // Streaming support for all providers
+  async callStreaming(prompt: string, variables: Record<string, any> = {}): Promise<string> {
     let processedPrompt = prompt;
 
     // Replace variables in prompt
@@ -221,21 +144,27 @@ class MultiProviderLLM {
       processedPrompt = processedPrompt.replace(new RegExp(placeholder, 'g'), String(value));
     });
 
-    // Check token availability before making request
     await this.checkTokensBeforeRequest(processedPrompt);
-
-    const messages = [
-      { role: "user", content: processedPrompt }
-    ];
 
     const provider = this.modelSettings.llmProvider || "groq";
 
     try {
-      const response = await retryWithBackoff(async () => {
-        return await this.makeApiRequest(messages);
-      }, 3, 2000);
+      let response: string;
 
-      // Track token consumption after successful response
+      switch (provider) {
+        case "groq":
+          response = await this.streamGroq(processedPrompt);
+          break;
+        case "openrouter":
+          response = await this.streamOpenRouter(processedPrompt);
+          break;
+        case "cohere":
+          response = await this.streamCohere(processedPrompt);
+          break;
+        default:
+          response = await this.streamGroq(processedPrompt);
+      }
+
       await this.consumeTokensAfterResponse(processedPrompt, response, {
         action: variables.action || 'unknown',
         provider: provider,
@@ -243,19 +172,287 @@ class MultiProviderLLM {
 
       return response;
     } catch (error) {
-      console.error(`LLM API Error (${provider}):`, error);
-
-      // Return fallback response for certain operations
-      if (variables.action === 'start_goal') {
-        return '["Analyze the given objective", "Break down the task into smaller steps", "Execute the plan systematically"]';
-      }
-
+      console.error(`LLM Streaming Error (${provider}):`, error);
       throw error;
+    }
+  }
+
+  // Groq streaming implementation
+  private async streamGroq(prompt: string): Promise<string> {
+    const response = await fetch(this.getEndpoint(), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.getApiKey()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: this.getModelName(),
+        messages: [{ role: "user", content: prompt }],
+        temperature: this.modelSettings.customTemperature || 0.9,
+        max_tokens: this.modelSettings.customMaxTokens || 400,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Groq API error: ${response.status}`);
+    }
+
+    return this.processOpenAIStream(response);
+  }
+
+  // OpenRouter streaming implementation
+  private async streamOpenRouter(prompt: string): Promise<string> {
+    const response = await fetch(this.getEndpoint(), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.getApiKey()}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": env.NEXT_PUBLIC_VERCEL_URL || "http://localhost:3000",
+        "X-Title": "AutoGPT Next Web",
+      },
+      body: JSON.stringify({
+        model: this.getModelName(),
+        messages: [{ role: "user", content: prompt }],
+        temperature: this.modelSettings.customTemperature || 0.9,
+        max_tokens: this.modelSettings.customMaxTokens || 400,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenRouter API error: ${response.status}`);
+    }
+
+    return this.processOpenRouterStream(response);
+  }
+
+  // Cohere streaming implementation
+  private async streamCohere(prompt: string): Promise<string> {
+    const response = await fetch(this.getEndpoint(), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.getApiKey()}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: this.getModelName(),
+        message: prompt,
+        temperature: this.modelSettings.customTemperature || 0.9,
+        max_tokens: this.modelSettings.customMaxTokens || 400,
+        stream: true,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Cohere API error: ${response.status}`);
+    }
+
+    return this.processCohereStream(response);
+  }
+
+  // Process OpenAI-compatible streams (Groq)
+  private async processOpenAIStream(response: Response): Promise<string> {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let fullResponse = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') return fullResponse;
+
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content;
+              if (content) {
+                fullResponse += content;
+              }
+            } catch (e) {
+              // Ignore invalid JSON
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return fullResponse;
+  }
+
+  // Process OpenRouter SSE streams
+  private async processOpenRouterStream(response: Response): Promise<string> {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let fullResponse = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        while (true) {
+          const lineEnd = buffer.indexOf('\n');
+          if (lineEnd === -1) break;
+
+          const line = buffer.slice(0, lineEnd).trim();
+          buffer = buffer.slice(lineEnd + 1);
+
+          if (line.startsWith(':')) {
+            continue;
+          }
+
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') return fullResponse;
+
+            try {
+              const parsed = JSON.parse(data);
+              const content = parsed.choices?.[0]?.delta?.content;
+              if (content) {
+                fullResponse += content;
+              }
+            } catch (e) {
+              // Ignore invalid JSON
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return fullResponse;
+  }
+
+  // Process Cohere streams
+  private async processCohereStream(response: Response): Promise<string> {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let fullResponse = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.trim()) {
+            try {
+              const parsed = JSON.parse(line);
+              if (parsed.event_type === 'text-generation') {
+                fullResponse += parsed.text || "";
+              } else if (parsed.event_type === 'stream-end') {
+                return fullResponse;
+              }
+            } catch (e) {
+              // Ignore invalid JSON
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return fullResponse;
+  }
+
+  // Non-streaming fallback
+  async call(prompt: string, variables: Record<string, any> = {}): Promise<string> {
+    try {
+      return await this.callStreaming(prompt, variables);
+    } catch (error) {
+      console.error("Streaming failed, using non-streaming fallback:", error);
+      return await this.callNonStreaming(prompt, variables);
+    }
+  }
+
+  private async callNonStreaming(prompt: string, variables: Record<string, any> = {}): Promise<string> {
+    let processedPrompt = prompt;
+
+    Object.entries(variables).forEach(([key, value]) => {
+      const placeholder = `{${key}}`;
+      processedPrompt = processedPrompt.replace(new RegExp(placeholder, 'g'), String(value));
+    });
+
+    await this.checkTokensBeforeRequest(processedPrompt);
+
+    const provider = this.modelSettings.llmProvider || "groq";
+    const messages = [{ role: "user", content: processedPrompt }];
+
+    let response: Response;
+
+    if (provider === "cohere") {
+      response = await fetch(this.getEndpoint(), {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.getApiKey()}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: this.getModelName(),
+          message: processedPrompt,
+          temperature: this.modelSettings.customTemperature || 0.9,
+          max_tokens: this.modelSettings.customMaxTokens || 400,
+        }),
+      });
+    } else {
+      response = await fetch(this.getEndpoint(), {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.getApiKey()}`,
+          "Content-Type": "application/json",
+          ...(provider === "openrouter" && {
+            "HTTP-Referer": env.NEXT_PUBLIC_VERCEL_URL || "http://localhost:3000",
+            "X-Title": "AutoGPT Next Web",
+          }),
+        },
+        body: JSON.stringify({
+          model: this.getModelName(),
+          messages,
+          temperature: this.modelSettings.customTemperature || 0.9,
+          max_tokens: this.modelSettings.customMaxTokens || 400,
+        }),
+      });
+    }
+
+    if (!response.ok) {
+      throw new Error(`${provider} API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (provider === "cohere") {
+      return data.text || "";
+    } else {
+      return data.choices?.[0]?.message?.content || "";
     }
   }
 }
 
-// Web search functionality (unchanged but with error handling)
+// Web search functionality
 async function performWebSearch(query: string, modelSettings: ModelSettings): Promise<WebSearchResult[]> {
   if (!modelSettings.enableWebSearch) {
     return [];
@@ -335,7 +532,7 @@ async function performSerpSearch(query: string): Promise<WebSearchResult[]> {
   }));
 }
 
-// Agent service implementation with enhanced error handling
+// Agent service implementation with improved task creation logic
 async function startGoalAgent(
   modelSettings: ModelSettings,
   goal: string,
@@ -344,7 +541,22 @@ async function startGoalAgent(
 ): Promise<string[]> {
   const llm = new MultiProviderLLM(modelSettings, sessionToken);
 
-  const prompt = `You are a task creation AI called AgentGPT. You must answer in the "${customLanguage}" language. You are not a part of any system or device. You have the following objective "${goal}". Create a list of zero to three tasks to be completed by your AI system such that this goal is more closely, or completely reached. You have access to web search for tasks that require current events or small searches. Return the response as a formatted ARRAY of strings that can be used in JSON.parse(). Example: ["Task 1", "Task 2"].`;
+  const prompt = `You are AgentGPT, an AI task planning system. Your job is to break down goals into actionable tasks.
+
+GOAL: "${goal}"
+LANGUAGE: Answer in "${customLanguage}" language
+
+INSTRUCTIONS:
+1. Create 2-4 specific, actionable tasks to achieve this goal
+2. Each task should be clear and executable
+3. Focus on concrete steps, not abstract concepts
+4. Consider if web search might be needed for current information
+
+IMPORTANT: Respond with ONLY a valid JSON array of strings. No explanations, no additional text.
+Format: ["Task 1 description", "Task 2 description", "Task 3 description"]
+
+Example response:
+["Research current market trends for the goal topic", "Analyze key requirements and constraints", "Create a detailed implementation plan", "Execute the first phase of the plan"]`;
 
   try {
     const completion = await llm.call(prompt, {
@@ -353,17 +565,77 @@ async function startGoalAgent(
       action: 'start_goal',
     });
 
-    console.log("Goal", goal, "Completion:" + completion);
-    return extractTasks(completion, []);
+    console.log("Goal:", goal, "Raw completion:", completion);
+
+    const tasks = extractTasks(completion, []);
+
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      console.warn("No valid tasks extracted, providing fallback tasks");
+      return generateFallbackTasks(goal);
+    }
+
+    return tasks;
   } catch (error) {
     console.error("Start goal agent error:", error);
-    // Return fallback tasks based on goal
+    return generateFallbackTasks(goal);
+  }
+}
+
+// Generate fallback tasks - ensures we always return an array
+function generateFallbackTasks(goal: string): string[] {
+  const goalLower = goal.toLowerCase();
+
+  if (goalLower.includes("research") || goalLower.includes("analyze") || goalLower.includes("study")) {
     return [
-      `Analyze: ${goal}`,
-      `Plan approach for: ${goal}`,
-      `Execute steps to achieve: ${goal}`
+      `Research background information about: ${goal}`,
+      `Gather relevant data and sources`,
+      `Analyze findings and key insights`,
+      `Summarize research conclusions`
     ];
   }
+
+  if (goalLower.includes("create") || goalLower.includes("build") || goalLower.includes("develop") || goalLower.includes("make")) {
+    return [
+      `Plan the requirements for: ${goal}`,
+      `Design the structure and approach`,
+      `Begin implementation of core components`,
+      `Test and refine the solution`
+    ];
+  }
+
+  if (goalLower.includes("learn") || goalLower.includes("understand") || goalLower.includes("master")) {
+    return [
+      `Identify key concepts to learn for: ${goal}`,
+      `Study fundamental principles and basics`,
+      `Practice with examples and exercises`,
+      `Apply knowledge to real scenarios`
+    ];
+  }
+
+  if (goalLower.includes("solve") || goalLower.includes("fix") || goalLower.includes("resolve")) {
+    return [
+      `Analyze the problem: ${goal}`,
+      `Identify potential solutions and approaches`,
+      `Test and evaluate different solutions`,
+      `Implement the best solution`
+    ];
+  }
+
+  if (goalLower.includes("plan") || goalLower.includes("organize") || goalLower.includes("strategy")) {
+    return [
+      `Define scope and objectives for: ${goal}`,
+      `Break down into manageable phases`,
+      `Identify resources and requirements`,
+      `Create detailed timeline and milestones`
+    ];
+  }
+
+  return [
+    `Analyze and understand: ${goal}`,
+    `Research relevant information and context`,
+    `Develop a detailed action plan`,
+    `Execute the plan step by step`
+  ];
 }
 
 async function analyzeTaskAgent(
@@ -376,7 +648,22 @@ async function analyzeTaskAgent(
     const llm = new MultiProviderLLM(modelSettings, sessionToken);
     const actions = ["reason", "search"];
 
-    const prompt = `You have the following higher level objective "${goal}". You currently are focusing on the following task: "${task}". Based on this information, evaluate what the best action to take is strictly from the list of actions: ${actions.join(", ")}. You should use 'search' only for research about current events where "arg" is a simple clear search query based on the task only. Use "reason" for all other actions. Return the response as an object of the form { "action": "string", "arg": "string" } that can be used in JSON.parse() and NOTHING ELSE.`;
+    const prompt = `You are analyzing a task to determine the best approach.
+
+GOAL: "${goal}"
+CURRENT TASK: "${task}"
+
+INSTRUCTIONS:
+1. Determine if this task needs current/recent information that requires web search
+2. Use "search" ONLY for tasks about current events, latest news, recent data, or real-time information
+3. Use "reason" for analysis, planning, creative tasks, or tasks with existing knowledge
+
+Choose from: ${actions.join(", ")}
+
+Respond with ONLY a JSON object in this exact format:
+{"action": "search", "arg": "simple search query"}
+OR
+{"action": "reason", "arg": "reasoning approach description"}`;
 
     const completion = await llm.call(prompt, {
       goal,
@@ -385,8 +672,34 @@ async function analyzeTaskAgent(
       action: 'analyze_task',
     });
 
-    console.log("Analysis completion:\n", completion);
-    return JSON.parse(completion) as Analysis;
+    console.log("Analysis completion:", completion);
+
+    try {
+      const jsonMatch = completion.match(/\{[^}]+\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]) as Analysis;
+        if (parsed.action && parsed.arg) {
+          return parsed;
+        }
+      }
+
+      const result = JSON.parse(completion) as Analysis;
+      return result;
+    } catch (parseError) {
+      console.warn("Failed to parse analysis response, using heuristic approach");
+
+      const taskLower = task.toLowerCase();
+      const searchKeywords = ['current', 'latest', 'recent', 'today', 'now', 'update', 'news', 'price', 'stock', 'weather', '2024', '2025'];
+
+      if (searchKeywords.some(keyword => taskLower.includes(keyword))) {
+        return {
+          action: "search",
+          arg: task.substring(0, 50)
+        };
+      }
+
+      return DefaultAnalysis;
+    }
   } catch (e) {
     console.error("Error analyzing task", e);
     return DefaultAnalysis;
@@ -414,10 +727,17 @@ async function executeTaskAgent(
           .join("\n\n");
 
         const llm = new MultiProviderLLM(modelSettings, sessionToken);
-        const prompt = `Answer in the "${customLanguage}" language. Given the following overall objective "${goal}" and the following sub-task "${task}". Using the search results below, perform the task in a detailed manner. If coding is required, provide code in markdown.
+        const prompt = `Answer in "${customLanguage}" language.
 
-Search Results:
-${searchContext}`;
+GOAL: "${goal}"
+TASK: "${task}"
+
+Based on the search results below, complete this task with detailed information:
+
+SEARCH RESULTS:
+${searchContext}
+
+Provide a comprehensive response with specific details from the search results. If coding is required, provide code in markdown format.`;
 
         const completion = await llm.call(prompt, {
           goal,
@@ -437,7 +757,14 @@ ${searchContext}`;
 
   try {
     const llm = new MultiProviderLLM(modelSettings, sessionToken);
-    const prompt = `Answer in the "${customLanguage}" language. Given the following overall objective "${goal}" and the following sub-task "${task}". Perform the task in a detailed manner. If coding is required, provide code in markdown.`;
+    const prompt = `Answer in "${customLanguage}" language.
+
+GOAL: "${goal}"
+TASK: "${task}"
+
+Complete this task with detailed, actionable information. Be specific and practical in your response. If coding is required, provide code in markdown format.
+
+Provide a comprehensive response that directly addresses the task requirements.`;
 
     const completion = await llm.call(prompt, {
       goal,
@@ -457,6 +784,7 @@ ${searchContext}`;
   }
 }
 
+// Fixed createTasksAgent with improved logic
 async function createTasksAgent(
   modelSettings: ModelSettings,
   goal: string,
@@ -470,7 +798,41 @@ async function createTasksAgent(
   try {
     const llm = new MultiProviderLLM(modelSettings, sessionToken);
 
-    const prompt = `You are an AI task creation agent. You must answer in the "${customLanguage}" language. You have the following objective "${goal}". You have the following incomplete tasks ${JSON.stringify(tasks)} and have just executed the following task "${lastTask}" and received the following result "${result}". Based on this, create a new task to be completed by your AI system ONLY IF NEEDED such that your goal is more closely reached or completely reached. Return the response as an array of strings that can be used in JSON.parse() and NOTHING ELSE.`;
+    // Calculate progress metrics to inform decision
+    const totalCompletedTasks = (completedTasks || []).length;
+    const remainingTasksCount = tasks.length;
+    const progressRatio = totalCompletedTasks / (totalCompletedTasks + remainingTasksCount + 1);
+
+    // Enhanced prompt with better context awareness
+    const prompt = `You are an AI task creation agent. Answer in "${customLanguage}" language.
+
+GOAL: "${goal}"
+REMAINING TASKS: ${JSON.stringify(tasks)}
+COMPLETED TASKS COUNT: ${totalCompletedTasks}
+LAST COMPLETED TASK: "${lastTask}"
+TASK RESULT: "${result}"
+
+CONTEXT ANALYSIS:
+- Progress: ${Math.round(progressRatio * 100)}% complete
+- Remaining tasks: ${remainingTasksCount}
+- Last task result quality: ${result.length > 50 ? 'Detailed' : 'Basic'}
+
+DECISION RULES:
+1. If progress > 70% and remaining tasks ≤ 2: Return [] (goal likely achievable with existing tasks)
+2. If last task result indicates significant progress toward goal: Return [] or maximum 1 task
+3. If remaining tasks > 4: Return [] (avoid task overflow)
+4. If last task failed or was incomplete: Create 1-2 follow-up tasks
+5. If new important aspects discovered: Create 1-2 targeted tasks
+
+CREATE NEW TASKS ONLY IF:
+- Essential gaps exist in achieving the goal
+- The last task revealed new requirements
+- Critical follow-up actions are needed
+
+IMPORTANT: Respond with ONLY a JSON array. Maximum 2 new tasks.
+Format: ["New task 1", "New task 2"] or []
+
+If uncertain, prefer [] over creating unnecessary tasks.`;
 
     const completion = await llm.call(prompt, {
       goal,
@@ -478,15 +840,91 @@ async function createTasksAgent(
       lastTask,
       result,
       customLanguage,
+      progressRatio: Math.round(progressRatio * 100),
       action: 'create_tasks',
     });
 
-    return extractTasks(completion, completedTasks || []);
+    console.log("Create tasks completion:", completion);
+
+    // Parse the response
+    const newTasks = extractTasks(completion, completedTasks || []);
+
+    // Apply intelligent filtering
+    const filteredTasks = intelligentTaskFilter(newTasks, {
+      goal,
+      completedTasks: completedTasks || [],
+      remainingTasks: tasks,
+      lastTask,
+      result,
+      progressRatio
+    });
+
+    return Array.isArray(filteredTasks) ? filteredTasks : [];
   } catch (error) {
     console.error("Create tasks error:", error);
-    // Return empty array to signal completion
+    return []; // Always return empty array on error
+  }
+}
+
+// Intelligent task filtering to prevent unnecessary task creation
+function intelligentTaskFilter(
+  newTasks: string[],
+  context: {
+    goal: string;
+    completedTasks: string[];
+    remainingTasks: string[];
+    lastTask: string;
+    result: string;
+    progressRatio: number;
+  }
+): string[] {
+  if (!Array.isArray(newTasks) || newTasks.length === 0) {
     return [];
   }
+
+  const { goal, completedTasks, remainingTasks, progressRatio } = context;
+
+  // Rule 1: If progress is high and few remaining tasks, limit new tasks
+  if (progressRatio > 0.7 && remainingTasks.length <= 2) {
+    console.log("High progress detected, limiting new tasks");
+    return [];
+  }
+
+  // Rule 2: If too many tasks already exist, don't add more
+  if (remainingTasks.length > 4) {
+    console.log("Too many remaining tasks, skipping new task creation");
+    return [];
+  }
+
+  // Rule 3: Filter out duplicate or similar tasks
+  const allExistingTasks = [...completedTasks, ...remainingTasks];
+  const filteredTasks = newTasks.filter(newTask => {
+    const newTaskLower = newTask.toLowerCase();
+    return !allExistingTasks.some(existingTask => {
+      const existingLower = existingTask.toLowerCase();
+      // Check for substantial overlap in task content
+      const words1 = newTaskLower.split(' ').filter(w => w.length > 3);
+      const words2 = existingLower.split(' ').filter(w => w.length > 3);
+      const overlap = words1.filter(w => words2.includes(w)).length;
+      return overlap > Math.min(words1.length, words2.length) * 0.6;
+    });
+  });
+
+  // Rule 4: Limit to maximum 2 tasks
+  const limitedTasks = filteredTasks.slice(0, 2);
+
+  // Rule 5: Apply goal completion heuristics
+  const goalLower = goal.toLowerCase();
+  if (goalLower.includes('what is') || goalLower.includes('explain') || goalLower.includes('define')) {
+    // Information-seeking goals typically need fewer follow-up tasks
+    if (completedTasks.length >= 2) {
+      console.log("Information goal likely satisfied, limiting new tasks");
+      return [];
+    }
+  }
+
+  console.log(`Task filtering: ${newTasks.length} → ${limitedTasks.length} tasks`);
+  return limitedTasks;
 }
 
 interface AgentService {
@@ -531,7 +969,7 @@ const RealAgentService: AgentService = {
 
 const MockAgentService: AgentService = {
   startGoalAgent: async (modelSettings, goal, customLanguage, sessionToken) => {
-    return await new Promise((resolve) => resolve(["Task 1"]));
+    return ["Analyze the goal requirements", "Research relevant information", "Create an action plan", "Execute the plan"];
   },
 
   createTasksAgent: async (
@@ -544,7 +982,9 @@ const MockAgentService: AgentService = {
     customLanguage: string,
     sessionToken?: string
   ) => {
-    return await new Promise((resolve) => resolve(["Task 4"]));
+    // Mock: Return fewer tasks to avoid endless loops
+    if ((completedTasks || []).length >= 3) return [];
+    return ["Continue working towards goal"];
   },
 
   analyzeTaskAgent: async (
@@ -553,12 +993,10 @@ const MockAgentService: AgentService = {
     task: string,
     sessionToken?: string
   ) => {
-    return await new Promise((resolve) =>
-      resolve({
-        action: "reason",
-        arg: "Mock analysis",
-      })
-    );
+    return {
+      action: "reason",
+      arg: "Mock analysis approach",
+    };
   },
 
   executeTaskAgent: async (
@@ -569,7 +1007,7 @@ const MockAgentService: AgentService = {
     customLanguage: string,
     sessionToken?: string
   ) => {
-    return await new Promise((resolve) => resolve("Result: " + task));
+    return "Mock result for task: " + task;
   },
 };
 
