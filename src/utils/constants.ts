@@ -133,9 +133,12 @@ export const DEFAULT_TEMPERATURE = 0.9 as const;
 export const DEMO_TOKEN_LIMIT = 10000 as const;
 export const TOKEN_RESET_HOURS = 24 as const;
 
-// Web Search Configuration
+// Enhanced Web Search Configuration with token optimization
 export const WEB_SEARCH_CONFIG = {
-  MAX_RESULTS: 10,
-  SNIPPET_LENGTH: 200,
-  TIMEOUT: 10000,
+  MAX_RESULTS: 5,
+  SNIPPET_LENGTH: 150, // Optimized for token efficiency
+  TIMEOUT: 8000,
+  MAX_TOTAL_CONTENT_LENGTH: 800, // Total content limit from all snippets
+  MIN_SNIPPET_LENGTH: 50, // Minimum useful snippet length
+  MAX_SEARCH_RESULTS_FOR_LLM: 3, // Maximum results to send to LLM
 } as const;

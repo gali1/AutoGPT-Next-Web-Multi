@@ -1,3 +1,5 @@
+// src/components/MarkdownRenderer.tsx
+
 import React, { useCallback, useState } from "react";
 import { FaCopy } from "react-icons/fa";
 import type { ReactNode } from "react";
@@ -6,22 +8,85 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/default.css";
 
-const MarkdownRenderer = ({ children }) => (
-  <ReactMarkdown
-    remarkPlugins={[remarkGfm]}
-    rehypePlugins={[rehypeHighlight]}
-    components={{
-      pre: CustomPre,
-      code: CustomCodeBlock,
-      a: (props) => CustomLink({ children: props.children, href: props.href }),
-      p: (props) => <p className="mb-4">{props.children}</p>,
-      ul: (props) => <ul className="ml-8 list-disc">{props.children}</ul>,
-      ol: (props) => <ol className="ml-8 list-decimal">{props.children}</ol>,
-    }}
-  >
-    {children}
-  </ReactMarkdown>
-);
+const MarkdownRenderer = ({ children }) => {
+  // Handle undefined or null children
+  if (!children || typeof children !== 'string') {
+    return <div className="text-gray-400 italic">No content to display</div>;
+  }
+
+  // Clean the content to prevent parsing errors
+  const cleanContent = String(children).trim();
+
+  if (cleanContent.length === 0) {
+    return <div className="text-gray-400 italic">Empty content</div>;
+  }
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeHighlight]}
+      components={{
+        pre: CustomPre,
+        code: CustomCodeBlock,
+        a: (props) => CustomLink({ children: props.children, href: props.href }),
+        p: (props) => <p className="mb-4">{props.children}</p>,
+        ul: (props) => <ul className="ml-8 list-disc">{props.children}</ul>,
+        ol: (props) => <ol className="ml-8 list-decimal">{props.children}</ol>,
+        // Add error boundaries for table elements
+        table: (props) => {
+          try {
+            return <table className="w-full rounded-lg text-white bg-[#0d1117]">{props.children}</table>;
+          } catch (error) {
+            console.warn("Table rendering error:", error);
+            return <div className="text-yellow-400">Table content could not be rendered</div>;
+          }
+        },
+        thead: (props) => {
+          try {
+            return <thead>{props.children}</thead>;
+          } catch (error) {
+            console.warn("Table head rendering error:", error);
+            return null;
+          }
+        },
+        tbody: (props) => {
+          try {
+            return <tbody>{props.children}</tbody>;
+          } catch (error) {
+            console.warn("Table body rendering error:", error);
+            return null;
+          }
+        },
+        tr: (props) => {
+          try {
+            return <tr>{props.children}</tr>;
+          } catch (error) {
+            console.warn("Table row rendering error:", error);
+            return null;
+          }
+        },
+        th: (props) => {
+          try {
+            return <th className="rounded-lg border border-gray-700 px-4 py-2 bg-[#161b22]">{props.children}</th>;
+          } catch (error) {
+            console.warn("Table header rendering error:", error);
+            return null;
+          }
+        },
+        td: (props) => {
+          try {
+            return <td className="rounded-lg border border-gray-700 px-4 py-2">{props.children}</td>;
+          } catch (error) {
+            console.warn("Table cell rendering error:", error);
+            return null;
+          }
+        },
+      }}
+    >
+      {cleanContent}
+    </ReactMarkdown>
+  );
+};
 
 const CustomPre = ({ children }: { children: ReactNode }) => {
   const [isCopied, setIsCopied] = useState(false);
@@ -35,12 +100,16 @@ const CustomPre = ({ children }: { children: ReactNode }) => {
 
   const handleCopyClick = useCallback(() => {
     if (code && React.isValidElement(code)) {
-      const codeString = extractTextFromNode(code.props.children);
-      void navigator.clipboard.writeText(codeString);
-      setIsCopied(true);
-      setTimeout(() => {
-        setIsCopied(false);
-      }, 2000);
+      try {
+        const codeString = extractTextFromNode(code.props.children);
+        void navigator.clipboard.writeText(codeString);
+        setIsCopied(true);
+        setTimeout(() => {
+          setIsCopied(false);
+        }, 2000);
+      } catch (error) {
+        console.warn("Copy to clipboard failed:", error);
+      }
     }
   }, [code]);
 
@@ -72,6 +141,11 @@ const CustomCodeBlock = ({
   className,
   children,
 }: CustomCodeBlockProps) => {
+  // Handle undefined or null children
+  if (!children) {
+    return null;
+  }
+
   // Inline code blocks will be placed directly within a paragraph
   if (inline) {
     return (
@@ -87,6 +161,11 @@ const CustomCodeBlock = ({
 };
 
 const CustomLink = ({ children, href }) => {
+  // Handle undefined href
+  if (!href) {
+    return <span className="text-blue-400">{children}</span>;
+  }
+
   return (
     <a
       className="link overflow-hidden"
@@ -105,6 +184,10 @@ const isValidCustomCodeBlock = (
   React.isValidElement(element) && element.type === CustomCodeBlock;
 
 const extractLanguageName = (languageString: string): string => {
+  if (!languageString || typeof languageString !== 'string') {
+    return "";
+  }
+
   // The provided language will be "language-{PROGRAMMING_LANGUAGE}"
   const parts = languageString.split("-");
   if (parts.length > 1) {
@@ -118,13 +201,22 @@ const extractTextFromNode = (node: React.ReactNode): string => {
     return node;
   }
 
+  if (typeof node === "number") {
+    return String(node);
+  }
+
   if (Array.isArray(node)) {
     return node.map(extractTextFromNode).join("");
   }
 
   if (React.isValidElement(node)) {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument,@typescript-eslint/no-unsafe-member-access
-    return extractTextFromNode(node.props.children);
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-argument,@typescript-eslint/no-unsafe-member-access
+      return extractTextFromNode(node.props.children);
+    } catch (error) {
+      console.warn("Error extracting text from node:", error);
+      return "";
+    }
   }
 
   return "";

@@ -38,14 +38,14 @@ interface SessionCache {
   lastSync: string;
 }
 
-// Helper to get the base URL for API calls
+// Helper to get the base URL for API calls - more robust version
 function getBaseUrl(): string {
+  // In browser environment, always use relative URLs to avoid CORS issues
   if (typeof window !== 'undefined') {
-    // Browser environment
-    return window.location.origin;
+    return '';
   }
 
-  // Server environment
+  // Server environment - construct absolute URL
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL}`;
   }
@@ -55,6 +55,26 @@ function getBaseUrl(): string {
   }
 
   return `http://localhost:${process.env.PORT ?? 3000}`;
+}
+
+// Robust URL construction that works in all environments
+function constructApiUrl(endpoint: string): string {
+  // Handle absolute URLs
+  if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
+    return endpoint;
+  }
+
+  // Ensure endpoint starts with /
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+
+  // In browser, use relative URLs
+  if (typeof window !== 'undefined') {
+    return cleanEndpoint;
+  }
+
+  // In server, use absolute URLs
+  const baseUrl = getBaseUrl();
+  return `${baseUrl}${cleanEndpoint}`;
 }
 
 // Session management
@@ -111,18 +131,13 @@ function setLocalCache(cache: SessionCache): void {
   }
 }
 
-// API call utilities with proper URL handling - FIXED
+// Enhanced API call utilities with better error handling
 async function apiCall(endpoint: string, options: RequestInit = {}): Promise<any> {
-  // Construct URL outside try block so it's accessible in catch block
-  let url: string;
-  if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
-    url = endpoint;
-  } else {
-    const baseUrl = getBaseUrl();
-    url = `${baseUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
-  }
+  const url = constructApiUrl(endpoint);
 
   try {
+    console.log(`Making API call to: ${url}`);
+
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
@@ -132,21 +147,34 @@ async function apiCall(endpoint: string, options: RequestInit = {}): Promise<any
     });
 
     if (!response.ok) {
-      throw new Error(`API call failed: ${response.status} ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`API call failed: ${response.status} ${response.statusText} - ${errorText}`);
     }
 
     return response.json();
   } catch (error) {
     console.error(`API call to ${url} failed:`, error);
+
+    // For token-related API calls, fail silently to not break the main flow
+    if (url.includes('/api/tokens/')) {
+      console.warn('Token API call failed, continuing without token tracking');
+      return null;
+    }
+
     throw error;
   }
 }
 
-// Token management with error handling
+// Token management with enhanced error handling
 export async function initializeTokens(sessionToken?: string, cookieId?: string): Promise<TokenStatus | null> {
   try {
     const token = sessionToken || getSessionToken();
     const cookie = cookieId || getCookieId();
+
+    if (!token) {
+      console.warn('No session token available for token initialization');
+      return null;
+    }
 
     const result = await apiCall('/api/tokens/manage', {
       method: 'POST',
@@ -161,6 +189,10 @@ export async function initializeTokens(sessionToken?: string, cookieId?: string)
         },
       }),
     });
+
+    if (!result) {
+      return getDefaultTokenStatus();
+    }
 
     // Ensure proper token status structure
     const tokenStatus = {
@@ -182,20 +214,28 @@ export async function initializeTokens(sessionToken?: string, cookieId?: string)
     return tokenStatus;
   } catch (error) {
     console.error('Failed to initialize tokens:', error);
-    // Return default token status for demo
-    return {
-      tokensUsed: 0,
-      tokensRemaining: 10000,
-      resetAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      timeUntilReset: 24 * 60 * 60 * 1000,
-      canUseTokens: true,
-    };
+    return getDefaultTokenStatus();
   }
+}
+
+function getDefaultTokenStatus(): TokenStatus {
+  return {
+    tokensUsed: 0,
+    tokensRemaining: 10000,
+    resetAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    timeUntilReset: 24 * 60 * 60 * 1000,
+    canUseTokens: true,
+  };
 }
 
 export async function getTokenStatus(sessionToken?: string): Promise<TokenStatus | null> {
   try {
     const token = sessionToken || getSessionToken();
+
+    if (!token) {
+      console.warn('No session token available for token status check');
+      return getDefaultTokenStatus();
+    }
 
     // Check local cache first
     const cache = getLocalCache();
@@ -208,6 +248,11 @@ export async function getTokenStatus(sessionToken?: string): Promise<TokenStatus
     }
 
     const result = await apiCall(`/api/tokens/manage?sessionToken=${encodeURIComponent(token)}`);
+
+    if (!result) {
+      // Return cached data if available, otherwise default
+      return cache?.tokenStatus || getDefaultTokenStatus();
+    }
 
     // Update local cache
     if (cache) {
@@ -235,7 +280,7 @@ export async function getTokenStatus(sessionToken?: string): Promise<TokenStatus
 
     // Return cached data if available
     const cache = getLocalCache();
-    return cache?.tokenStatus || null;
+    return cache?.tokenStatus || getDefaultTokenStatus();
   }
 }
 
@@ -246,6 +291,15 @@ export async function consumeTokens(
 ): Promise<{ success: boolean; tokensRemaining: number; error?: string }> {
   try {
     const token = sessionToken || getSessionToken();
+
+    if (!token) {
+      console.warn('No session token available for token consumption');
+      return {
+        success: false,
+        tokensRemaining: 0,
+        error: 'No session token',
+      };
+    }
 
     const result = await apiCall('/api/tokens/manage', {
       method: 'PUT',
@@ -258,6 +312,14 @@ export async function consumeTokens(
         },
       }),
     });
+
+    if (!result) {
+      return {
+        success: false,
+        tokensRemaining: 0,
+        error: 'Token API unavailable',
+      };
+    }
 
     // Update local cache
     const cache = getLocalCache();
@@ -303,6 +365,11 @@ export async function createSession(sessionToken?: string, cookieId?: string, me
     const token = sessionToken || getSessionToken();
     const cookie = cookieId || getCookieId();
 
+    if (!token) {
+      console.warn('No session token available for session creation');
+      return false;
+    }
+
     const result = await apiCall('/api/database/session', {
       method: 'POST',
       body: JSON.stringify({
@@ -311,6 +378,11 @@ export async function createSession(sessionToken?: string, cookieId?: string, me
         metadata,
       }),
     });
+
+    if (!result) {
+      console.warn('Session creation failed, but continuing');
+      return false;
+    }
 
     // Initialize tokens for new session
     await initializeTokens(token, cookie);
@@ -321,7 +393,7 @@ export async function createSession(sessionToken?: string, cookieId?: string, me
       localStorage.setItem(COOKIE_STORAGE_KEY, cookie);
     }
 
-    return result.success;
+    return result.success || false;
   } catch (error) {
     console.error('Failed to create session:', error);
     return false;
@@ -335,6 +407,11 @@ export async function saveQueryResponse(
   metadata: Record<string, any> = {}
 ): Promise<boolean> {
   try {
+    if (!sessionToken) {
+      console.warn('No session token provided for query response save');
+      return false;
+    }
+
     // Estimate token consumption (rough approximation)
     const estimatedTokens = Math.ceil((query.length + response.length) / 4);
 
@@ -377,7 +454,7 @@ export async function saveQueryResponse(
       }),
     });
 
-    return result.success;
+    return result?.success || true; // Return true if local cache was updated
   } catch (error) {
     console.error('Failed to save query response:', error);
     return true; // Still return true if local cache was updated
@@ -386,6 +463,11 @@ export async function saveQueryResponse(
 
 export async function getSessionHistory(sessionToken: string): Promise<QueryResponseData[]> {
   try {
+    if (!sessionToken) {
+      console.warn('No session token provided for history retrieval');
+      return [];
+    }
+
     // Try local cache first
     const cache = getLocalCache();
     if (cache && cache.session.sessionToken === sessionToken) {
@@ -394,6 +476,11 @@ export async function getSessionHistory(sessionToken: string): Promise<QueryResp
 
     // Fetch from remote database
     const result = await apiCall(`/api/database/session?sessionToken=${encodeURIComponent(sessionToken)}`);
+
+    if (!result) {
+      // Return cached data if available
+      return cache?.queryResponses || [];
+    }
 
     // Update local cache
     const newCache: SessionCache = {
@@ -415,6 +502,10 @@ export async function getSessionHistory(sessionToken: string): Promise<QueryResp
 
 export async function sessionExists(sessionToken: string): Promise<boolean> {
   try {
+    if (!sessionToken) {
+      return false;
+    }
+
     // Check local cache first
     const cache = getLocalCache();
     if (cache && cache.session.sessionToken === sessionToken) {
@@ -422,16 +513,25 @@ export async function sessionExists(sessionToken: string): Promise<boolean> {
     }
 
     // Check remote database
-    await apiCall(`/api/database/session?sessionToken=${encodeURIComponent(sessionToken)}`);
-    return true;
+    const result = await apiCall(`/api/database/session?sessionToken=${encodeURIComponent(sessionToken)}`);
+    return !!result;
   } catch (error) {
+    console.error('Failed to check session existence:', error);
     return false;
   }
 }
 
 export async function recoverFromPostgreSQL(sessionToken: string): Promise<boolean> {
   try {
+    if (!sessionToken) {
+      return false;
+    }
+
     const result = await apiCall(`/api/database/session?sessionToken=${encodeURIComponent(sessionToken)}`);
+
+    if (!result) {
+      return false;
+    }
 
     // Update local cache with recovered data
     const newCache: SessionCache = {
@@ -461,7 +561,15 @@ export async function recoverFromPostgreSQL(sessionToken: string): Promise<boole
 
 export async function recoverFromCookieId(cookieId: string): Promise<boolean> {
   try {
+    if (!cookieId) {
+      return false;
+    }
+
     const result = await apiCall(`/api/database/session?cookieId=${encodeURIComponent(cookieId)}`);
+
+    if (!result) {
+      return false;
+    }
 
     // Update local cache with recovered data
     const newCache: SessionCache = {
@@ -496,13 +604,23 @@ export async function initializeDatabase(): Promise<void> {
   const sessionToken = getSessionToken();
   const cookieId = getCookieId();
 
+  if (!sessionToken || !cookieId) {
+    console.warn('Failed to initialize session tokens');
+    return;
+  }
+
   // Try to recover session if we have identifiers but no cache
   const cache = getLocalCache();
   if (!cache) {
     try {
-      await recoverFromPostgreSQL(sessionToken);
+      const recovered = await recoverFromPostgreSQL(sessionToken);
+      if (!recovered) {
+        // Create new session if recovery fails
+        await createSession(sessionToken, cookieId);
+      }
     } catch (error) {
-      // Create new session if recovery fails
+      console.error('Database initialization failed:', error);
+      // Create new session as fallback
       await createSession(sessionToken, cookieId);
     }
   } else {

@@ -155,7 +155,7 @@ const ChatWindow = ({
     }
   };
 
-  // Use utility function for current model validation
+  // Get the current model - use prop if provided, otherwise get default for provider
   const getCurrentModelName = () => {
     const model = currentModel || DEFAULT_MODELS[llmProvider];
     return getValidModelForProvider(model, llmProvider);
@@ -192,7 +192,7 @@ const ChatWindow = ({
         className={clsx(
           "mb-2 mr-2 ",
           (fullscreen && "max-h-[75vh] flex-grow overflow-auto") ||
-            "window-heights"
+          "window-heights"
         )}
         ref={scrollRef}
         onScroll={handleScroll}
@@ -313,14 +313,34 @@ const ModelSelector = ({
 }) => {
   const { t } = useTranslation("chat");
 
+  // Get available models for current provider
   const availableModels = getModelsForProvider(currentProvider);
   const currentModelDisplay = MODEL_DISPLAY_NAMES[currentModel as keyof typeof MODEL_DISPLAY_NAMES] || currentModel;
+
+  // Effect to handle provider changes - automatically set default model when provider changes
+  useEffect(() => {
+    console.log("ModelSelector: Provider changed to", currentProvider);
+
+    // Check if current model is valid for the new provider
+    if (!availableModels.includes(currentModel)) {
+      const defaultModel = DEFAULT_MODELS[currentProvider];
+      console.log(`Model ${currentModel} not available for provider ${currentProvider}, switching to default: ${defaultModel}`);
+      onModelChange(defaultModel);
+    }
+  }, [currentProvider, currentModel, availableModels, onModelChange]);
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedModel = e.target.value;
     console.log("ModelSelector: Model selected:", selectedModel);
     onModelChange(selectedModel);
   };
+
+  console.log("ModelSelector render:", {
+    currentProvider,
+    currentModel,
+    availableModels: availableModels.length,
+    isCurrentModelValid: availableModels.includes(currentModel)
+  });
 
   return (
     <div className="m-1 flex w-48 items-center justify-center gap-2 rounded-lg border-[2px] border-white/20 bg-zinc-700 px-2 py-1">
@@ -358,6 +378,8 @@ const ProviderSelector = ({
     console.log("ProviderSelector: Provider selected:", selectedProvider);
     onProviderChange(selectedProvider);
   };
+
+  console.log("ProviderSelector render - Current provider:", currentProvider);
 
   return (
     <div className="m-1 flex w-40 items-center justify-center gap-2 rounded-lg border-[2px] border-white/20 bg-zinc-700 px-2 py-1">
@@ -432,7 +454,7 @@ const MacWindowHeader = (props: HeaderProps) => {
 
       try {
         document.execCommand("copy");
-      } catch (err) {}
+      } catch (err) { }
 
       document.body.removeChild(textArea);
     }

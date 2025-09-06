@@ -1,7 +1,9 @@
+// src/utils/prompts.ts
+
 import { OpenAI } from "langchain/llms/openai";
 import { PromptTemplate } from "langchain/prompts";
 import type { ModelSettings } from "./types";
-import { GPT_35_TURBO } from "./constants";
+import { DEFAULT_MODELS, LLM_PROVIDERS } from "./constants";
 
 const getServerSideKey = (): string => {
   const keys: string[] = (process.env.OPENAI_API_KEY || "")
@@ -18,10 +20,14 @@ export const createModel = (settings: ModelSettings) => {
     _settings = undefined;
   }
 
+  // Get the current provider and determine the appropriate model
+  const provider = settings.llmProvider || LLM_PROVIDERS.GROQ;
+  const defaultModel = DEFAULT_MODELS[provider];
+
   const options = {
     openAIApiKey: _settings?.customApiKey || getServerSideKey(),
     temperature: _settings?.customTemperature || 0.9,
-    modelName: _settings?.customModelName || GPT_35_TURBO,
+    modelName: _settings?.customModelName || defaultModel,
     maxTokens: _settings?.customMaxTokens || 400,
   };
 

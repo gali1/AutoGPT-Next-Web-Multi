@@ -1,64 +1,50 @@
 // src/utils/modelValidation.ts
 
 import type { LLMProvider } from "./types";
-import { LLM_PROVIDERS, DEFAULT_MODELS } from "./constants";
+import { LLM_PROVIDERS, DEFAULT_MODELS, GROQ_MODELS, OPENROUTER_MODELS, COHERE_MODELS } from "./constants";
 
 // Type-safe model validation helper
 export function getModelsForProvider(provider: LLMProvider): string[] {
+    console.log("Getting models for provider:", provider);
+
     switch (provider) {
         case LLM_PROVIDERS.GROQ:
-            return [
-                "deepseek-r1-distill-llama-70b",
-                "meta-llama/llama-4-scout-17b-16e-instruct",
-                "meta-llama/llama-4-maverick-17b-128e-instruct",
-                "compound-beta",
-                "moonshotai/kimi-k2-instruct",
-                "openai/gpt-oss-120b",
-                "llama3-8b-8192",
-                "llama-3.1-8b-instant",
-                "llama-3.3-70b-versatile"
-            ];
+            return [...GROQ_MODELS];
         case LLM_PROVIDERS.OPENROUTER:
-            return [
-                "qwen/qwen3-coder:free",
-                "tngtech/deepseek-r1t-chimera:free",
-                "moonshotai/kimi-k2:free",
-                "google/gemini-2.0-flash-exp:free",
-                "microsoft/mai-ds-r1:free",
-                "meta-llama/llama-3.3-70b-instruct:free",
-                "mistralai/mistral-small-3.2-24b-instruct:free",
-                "cognitivecomputations/dolphin-mistral-24b-venice-edition:free"
-            ];
+            return [...OPENROUTER_MODELS];
         case LLM_PROVIDERS.COHERE:
-            return [
-                "command-nightly",
-                "command-r",
-                "command-r-03-2024",
-                "command-r-08-2024",
-                "command-r-plus",
-                "command-light-nightly",
-                "command-light",
-                "command"
-            ];
+            return [...COHERE_MODELS];
         default:
-            return [];
+            console.warn("Unknown provider:", provider, "returning Groq models");
+            return [...GROQ_MODELS];
     }
 }
 
 export function isValidModelForProvider(model: string, provider: LLMProvider): boolean {
     const availableModels = getModelsForProvider(provider);
-    return availableModels.includes(model);
+    const isValid = availableModels.includes(model);
+    console.log(`Validating model ${model} for provider ${provider}: ${isValid}`);
+    return isValid;
 }
 
 export function getValidModelForProvider(model: string | undefined, provider: LLMProvider): string {
-    if (!model) {
-        return DEFAULT_MODELS[provider];
+    console.log(`Getting valid model for provider ${provider}, input model: ${model}`);
+
+    // If no model provided, return default
+    if (!model || model.trim() === "") {
+        const defaultModel = DEFAULT_MODELS[provider];
+        console.log(`No model provided, returning default: ${defaultModel}`);
+        return defaultModel;
     }
 
+    // If model is valid for provider, return it
     if (isValidModelForProvider(model, provider)) {
+        console.log(`Model ${model} is valid for provider ${provider}`);
         return model;
     }
 
-    console.warn(`Model ${model} not valid for provider ${provider}, using default`);
-    return DEFAULT_MODELS[provider];
+    // If model is not valid for provider, return default
+    const defaultModel = DEFAULT_MODELS[provider];
+    console.log(`Model ${model} not valid for provider ${provider}, returning default: ${defaultModel}`);
+    return defaultModel;
 }

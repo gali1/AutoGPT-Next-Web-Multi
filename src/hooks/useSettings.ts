@@ -1,6 +1,6 @@
 // src/hooks/useSettings.ts
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import type { ModelSettings, LLMProvider } from "../utils/types";
 import {
   DEFAULT_MAX_LOOPS_CUSTOM_API_KEY,
@@ -58,32 +58,20 @@ const loadSettings = (): ModelSettings => {
     defaultSettings.llmProvider = LLM_PROVIDERS.GROQ;
   }
 
-  // Set default model for provider if not set OR if current model doesn't belong to the provider
+  // Set default model for provider if not set
   const currentProvider = defaultSettings.llmProvider;
   const currentModel = defaultSettings.customModelName;
 
-  // Check if current model belongs to current provider
-  const isValidModelForProvider = (() => {
-    switch (currentProvider) {
-      case LLM_PROVIDERS.GROQ:
-        return import("../utils/constants").then(c => c.GROQ_MODELS.includes(currentModel as any));
-      case LLM_PROVIDERS.OPENROUTER:
-        return import("../utils/constants").then(c => c.OPENROUTER_MODELS.includes(currentModel as any));
-      case LLM_PROVIDERS.COHERE:
-        return import("../utils/constants").then(c => c.COHERE_MODELS.includes(currentModel as any));
-      default:
-        return Promise.resolve(false);
-    }
-  });
-
-  // If no model or invalid model for provider, set default
-  if (!currentModel) {
+  // If no model or empty model, set default for provider
+  if (!currentModel || currentModel.trim() === "") {
     defaultSettings.customModelName = DEFAULT_MODELS[currentProvider];
   }
 
   // Reset to defaults if no API key and not guest mode
   if (!isGuestMode() && !hasValidApiKey(defaultSettings)) {
-    return { ...DEFAULT_SETTINGS };
+    const resetSettings = { ...DEFAULT_SETTINGS };
+    resetSettings.customGuestKey = defaultSettings.customGuestKey; // Preserve guest key
+    return resetSettings;
   }
 
   // Upgrade max loops if using custom API key
@@ -112,7 +100,9 @@ const hasValidApiKey = (settings: ModelSettings): boolean => {
 export function useSettings() {
   const [settings, setSettings] = useState<ModelSettings>(() => loadSettings());
 
-  const saveSettings = (newSettings: ModelSettings) => {
+  const saveSettings = useCallback((newSettings: ModelSettings) => {
+    console.log("Saving settings:", newSettings);
+
     let processedSettings = { ...newSettings };
 
     // Ensure provider is valid
@@ -120,42 +110,19 @@ export function useSettings() {
       processedSettings.llmProvider = LLM_PROVIDERS.GROQ;
     }
 
-    // Validate model belongs to provider - if not, set default
-    const provider = processedSettings.llmProvider;
-    const model = processedSettings.customModelName;
-
-    const getModelsForProvider = (p: LLMProvider) => {
-      switch (p) {
-        case LLM_PROVIDERS.GROQ:
-          return import("../utils/constants").then(c => c.GROQ_MODELS);
-        case LLM_PROVIDERS.OPENROUTER:
-          return import("../utils/constants").then(c => c.OPENROUTER_MODELS);
-        case LLM_PROVIDERS.COHERE:
-          return import("../utils/constants").then(c => c.COHERE_MODELS);
-        default:
-          return Promise.resolve([]);
-      }
-    };
-
-    // Check if model is valid for provider
-    getModelsForProvider(provider).then(models => {
-      if (!model || !models.includes(model as any)) {
-        processedSettings.customModelName = DEFAULT_MODELS[provider];
-        console.log(`Model ${model} invalid for provider ${provider}, setting to default: ${DEFAULT_MODELS[provider]}`);
-      }
-    });
-
     // If no model specified, set default for provider
-    if (!processedSettings.customModelName) {
+    if (!processedSettings.customModelName || processedSettings.customModelName.trim() === "") {
       processedSettings.customModelName = DEFAULT_MODELS[processedSettings.llmProvider];
     }
 
-    // Reset to defaults if no API key and not guest mode
+    // Reset to defaults if no API key and not guest mode (preserve certain settings)
     if (!hasValidApiKey(processedSettings) && !isGuestMode()) {
-      const { customGuestKey } = processedSettings;
+      const { customGuestKey, llmProvider, customModelName } = processedSettings;
       processedSettings = {
         ...DEFAULT_SETTINGS,
         customGuestKey,
+        llmProvider,
+        customModelName,
       };
     }
 
@@ -168,36 +135,69 @@ export function useSettings() {
       processedSettings.webSearchProvider = "google";
     }
 
-    console.log("Saving settings:", processedSettings);
-    setSettings(processedSettings);
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(processedSettings));
-  };
+    console.log("Final processed settings:", processedSettings);
 
-  const resetSettings = () => {
+    // Update state first
+    setSettings(processedSettings);
+
+    // Then save to localStorage
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(processedSettings));
+      console.log("Settings saved to localStorage successfully");
+    } catch (error) {
+      console.error("Failed to save settings to localStorage:", error);
+    }
+  }, []);
+
+  const resetSettings = useCallback(() => {
+    console.log("Resetting settings to defaults");
     localStorage.removeItem(SETTINGS_KEY);
     setSettings(DEFAULT_SETTINGS);
-  };
+  }, []);
 
-  const updateProvider = (provider: LLMProvider) => {
+  const updateProvider = useCallback((provider: LLMProvider) => {
+    console.log(`Updating provider from ${settings.llmProvider} to ${provider}`);
+
     const newSettings = {
       ...settings,
       llmProvider: provider,
       customModelName: DEFAULT_MODELS[provider], // Always update model when provider changes
     };
+
     console.log(`Provider changed to ${provider}, setting model to ${DEFAULT_MODELS[provider]}`);
     saveSettings(newSettings);
-  };
+  }, [settings, saveSettings]);
 
-  const updateModel = (model: string) => {
+  const updateModel = useCallback((model: string) => {
+    console.log(`Updating model from ${settings.customModelName} to ${model}`);
+
+    // Don't update if model is the same
+    if (settings.customModelName === model) {
+      console.log("Model unchanged, skipping update");
+      return;
+    }
+
     const newSettings = {
       ...settings,
       customModelName: model,
     };
-    console.log(`Model changed to ${model}`);
-    saveSettings(newSettings);
-  };
 
-  const getCurrentApiKey = (): string => {
+    console.log(`Model changed to ${model}`);
+    console.log("New settings:", newSettings);
+
+    // Update state immediately for instant UI feedback
+    setSettings(newSettings);
+
+    // Then save to localStorage
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(newSettings));
+      console.log("Model change saved to localStorage successfully");
+    } catch (error) {
+      console.error("Failed to save model change to localStorage:", error);
+    }
+  }, [settings]);
+
+  const getCurrentApiKey = useCallback((): string => {
     const provider = settings.llmProvider || LLM_PROVIDERS.GROQ;
 
     switch (provider) {
@@ -210,20 +210,24 @@ export function useSettings() {
       default:
         return settings.customApiKey || "";
     }
-  };
+  }, [settings]);
 
-  const isConfigurationValid = (): boolean => {
+  const isConfigurationValid = useCallback((): boolean => {
     return isGuestMode() || hasValidApiKey(settings);
-  };
+  }, [settings]);
+
+  const hasValidApiKeyCallback = useCallback(() => {
+    return hasValidApiKey(settings);
+  }, [settings]);
 
   return {
     settings,
     saveSettings,
     resetSettings,
     updateProvider,
-    updateModel, // Add this new method
+    updateModel,
     getCurrentApiKey,
     isConfigurationValid,
-    hasValidApiKey: () => hasValidApiKey(settings),
+    hasValidApiKey: hasValidApiKeyCallback,
   };
 }

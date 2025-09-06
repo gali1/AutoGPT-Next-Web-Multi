@@ -4,7 +4,6 @@ import type { ModelSettings, LLMProvider, WebSearchResult, StreamingResponse } f
 import { env } from "../env/client.mjs";
 import { extractTasks } from "../utils/helpers";
 import { WEB_SEARCH_CONFIG, DEFAULT_MODELS, LLM_PROVIDERS } from "../utils/constants";
-import { consumeTokens, getTokenStatus } from "../utils/database";
 
 export type Analysis = {
   action: "reason" | "search";
@@ -15,6 +14,32 @@ export const DefaultAnalysis: Analysis = {
   action: "reason",
   arg: "Fallback due to parsing failure",
 };
+
+// Enhanced web search configuration for token optimization
+const OPTIMIZED_WEB_SEARCH_CONFIG = {
+  MAX_RESULTS: 5,
+  SNIPPET_LENGTH: 150, // Reduced for token efficiency
+  TIMEOUT: 8000,
+  MAX_TOTAL_CONTENT_LENGTH: 800, // Total content limit from all snippets
+  MIN_SNIPPET_LENGTH: 50, // Minimum useful snippet length
+};
+
+// Helper to construct absolute URLs for Edge Runtime
+function getAbsoluteUrl(path: string): string {
+  // In browser environment, use relative URLs
+  if (typeof window !== 'undefined') {
+    return path;
+  }
+
+  // In server/edge environment, construct absolute URL
+  const baseUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : process.env.NEXT_PUBLIC_VERCEL_URL
+    ? process.env.NEXT_PUBLIC_VERCEL_URL
+    : 'http://localhost:3000';
+
+  return `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+}
 
 // Token estimation utility
 function estimateTokens(text: string): number {
@@ -104,33 +129,68 @@ class MultiProviderLLM {
   private async checkTokensBeforeRequest(prompt: string): Promise<void> {
     if (!this.sessionToken) return;
 
-    const estimatedTokens = estimateTokens(prompt);
-    const tokenStatus = await getTokenStatus(this.sessionToken);
+    try {
+      const estimatedTokens = estimateTokens(prompt);
+      const tokenCheckUrl = getAbsoluteUrl(`/api/tokens/manage?sessionToken=${encodeURIComponent(this.sessionToken)}`);
 
-    if (tokenStatus && !tokenStatus.canUseTokens) {
-      throw new Error("Demo token limit reached. Please wait for reset or use your own API key.");
-    }
+      const response = await fetch(tokenCheckUrl, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+      });
 
-    if (tokenStatus && tokenStatus.tokensRemaining < estimatedTokens) {
-      throw new Error(`Insufficient demo tokens. Need ${estimatedTokens}, have ${tokenStatus.tokensRemaining}.`);
+      if (!response.ok) {
+        console.warn('Failed to check token status before request');
+        return;
+      }
+
+      const tokenStatus = await response.json();
+
+      if (tokenStatus && !tokenStatus.canUseTokens) {
+        throw new Error("Demo token limit reached. Please wait for reset or use your own API key.");
+      }
+
+      if (tokenStatus && tokenStatus.tokensRemaining < estimatedTokens) {
+        throw new Error(`Insufficient demo tokens. Need ${estimatedTokens}, have ${tokenStatus.tokensRemaining}.`);
+      }
+    } catch (error) {
+      // If token check fails, allow the request to proceed
+      console.warn('Token check failed, proceeding with request:', error);
     }
   }
 
   private async consumeTokensAfterResponse(prompt: string, response: string, metadata: Record<string, any> = {}): Promise<void> {
     if (!this.sessionToken) return;
 
-    const estimatedTokens = estimateTokens(prompt + response);
-
     try {
-      await consumeTokens(estimatedTokens, this.sessionToken, {
-        ...metadata,
-        provider: this.modelSettings.llmProvider,
-        model: this.getModelName(),
-        promptLength: prompt.length,
-        responseLength: response.length,
+      const estimatedTokens = estimateTokens(prompt + response);
+      const tokenConsumeUrl = getAbsoluteUrl('/api/tokens/manage');
+
+      const consumeResponse = await fetch(tokenConsumeUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sessionToken: this.sessionToken,
+          tokensToConsume: estimatedTokens,
+          metadata: {
+            ...metadata,
+            provider: this.modelSettings.llmProvider,
+            model: this.getModelName(),
+            promptLength: prompt.length,
+            responseLength: response.length,
+            timestamp: new Date().toISOString(),
+          },
+        }),
       });
+
+      if (!consumeResponse.ok) {
+        console.warn('Failed to consume tokens:', await consumeResponse.text());
+      } else {
+        console.log(`Consumed ${estimatedTokens} tokens for ${metadata.action || 'unknown'} operation`);
+      }
     } catch (error) {
-      console.warn("Failed to track token consumption:", error);
+      console.warn('Failed to track token consumption:', error);
     }
   }
 
@@ -452,7 +512,7 @@ class MultiProviderLLM {
   }
 }
 
-// Web search functionality
+// Enhanced web search functionality with token optimization
 async function performWebSearch(query: string, modelSettings: ModelSettings): Promise<WebSearchResult[]> {
   if (!modelSettings.enableWebSearch) {
     return [];
@@ -462,9 +522,9 @@ async function performWebSearch(query: string, modelSettings: ModelSettings): Pr
 
   try {
     if (searchProvider === "google") {
-      return await performGoogleSearch(query);
+      return await performOptimizedGoogleSearch(query);
     } else if (searchProvider === "serp") {
-      return await performSerpSearch(query);
+      return await performOptimizedSerpSearch(query);
     }
     return [];
   } catch (error) {
@@ -473,7 +533,7 @@ async function performWebSearch(query: string, modelSettings: ModelSettings): Pr
   }
 }
 
-async function performGoogleSearch(query: string): Promise<WebSearchResult[]> {
+async function performOptimizedGoogleSearch(query: string): Promise<WebSearchResult[]> {
   const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
   const engineId = process.env.GOOGLE_SEARCH_ENGINE_ID;
 
@@ -481,10 +541,10 @@ async function performGoogleSearch(query: string): Promise<WebSearchResult[]> {
     throw new Error("Google Search API credentials not configured");
   }
 
-  const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${engineId}&q=${encodeURIComponent(query)}&num=${WEB_SEARCH_CONFIG.MAX_RESULTS}`;
+  const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${engineId}&q=${encodeURIComponent(query)}&num=${OPTIMIZED_WEB_SEARCH_CONFIG.MAX_RESULTS}`;
 
   const response = await fetch(url, {
-    signal: AbortSignal.timeout(WEB_SEARCH_CONFIG.TIMEOUT),
+    signal: AbortSignal.timeout(OPTIMIZED_WEB_SEARCH_CONFIG.TIMEOUT),
   });
 
   if (!response.ok) {
@@ -493,15 +553,17 @@ async function performGoogleSearch(query: string): Promise<WebSearchResult[]> {
 
   const data = await response.json();
 
-  return (data.items || []).map((item: any) => ({
+  const results = (data.items || []).map((item: any) => ({
     title: item.title,
     url: item.link,
-    snippet: item.snippet?.substring(0, WEB_SEARCH_CONFIG.SNIPPET_LENGTH) || "",
+    snippet: item.snippet?.substring(0, OPTIMIZED_WEB_SEARCH_CONFIG.SNIPPET_LENGTH) || "",
     source: "google",
   }));
+
+  return optimizeSearchResults(results);
 }
 
-async function performSerpSearch(query: string): Promise<WebSearchResult[]> {
+async function performOptimizedSerpSearch(query: string): Promise<WebSearchResult[]> {
   const apiKey = process.env.SERP_API_KEY;
 
   if (!apiKey) {
@@ -514,8 +576,8 @@ async function performSerpSearch(query: string): Promise<WebSearchResult[]> {
       "X-API-KEY": apiKey,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ q: query, num: WEB_SEARCH_CONFIG.MAX_RESULTS }),
-    signal: AbortSignal.timeout(WEB_SEARCH_CONFIG.TIMEOUT),
+    body: JSON.stringify({ q: query, num: OPTIMIZED_WEB_SEARCH_CONFIG.MAX_RESULTS }),
+    signal: AbortSignal.timeout(OPTIMIZED_WEB_SEARCH_CONFIG.TIMEOUT),
   });
 
   if (!response.ok) {
@@ -524,12 +586,82 @@ async function performSerpSearch(query: string): Promise<WebSearchResult[]> {
 
   const data = await response.json();
 
-  return (data.organic || []).map((item: any) => ({
+  const results = (data.organic || []).map((item: any) => ({
     title: item.title,
     url: item.link,
-    snippet: item.snippet?.substring(0, WEB_SEARCH_CONFIG.SNIPPET_LENGTH) || "",
+    snippet: item.snippet?.substring(0, OPTIMIZED_WEB_SEARCH_CONFIG.SNIPPET_LENGTH) || "",
     source: "serp",
   }));
+
+  return optimizeSearchResults(results);
+}
+
+// Optimize search results for token efficiency
+function optimizeSearchResults(results: WebSearchResult[]): WebSearchResult[] {
+  // Filter out results with very short snippets
+  const filteredResults = results.filter(result =>
+    result.snippet.length >= OPTIMIZED_WEB_SEARCH_CONFIG.MIN_SNIPPET_LENGTH
+  );
+
+  // Sort by snippet quality (length and content relevance)
+  const sortedResults = filteredResults.sort((a, b) => {
+    const scoreA = calculateSnippetScore(a.snippet);
+    const scoreB = calculateSnippetScore(b.snippet);
+    return scoreB - scoreA;
+  });
+
+  // Limit total content length to stay within token limits
+  const optimizedResults: WebSearchResult[] = [];
+  let totalContentLength = 0;
+
+  for (const result of sortedResults) {
+    const additionalLength = result.title.length + result.snippet.length;
+
+    if (totalContentLength + additionalLength <= OPTIMIZED_WEB_SEARCH_CONFIG.MAX_TOTAL_CONTENT_LENGTH) {
+      optimizedResults.push(result);
+      totalContentLength += additionalLength;
+    } else {
+      // Try to fit a truncated version
+      const remainingLength = OPTIMIZED_WEB_SEARCH_CONFIG.MAX_TOTAL_CONTENT_LENGTH - totalContentLength - result.title.length;
+
+      if (remainingLength >= OPTIMIZED_WEB_SEARCH_CONFIG.MIN_SNIPPET_LENGTH) {
+        optimizedResults.push({
+          ...result,
+          snippet: result.snippet.substring(0, remainingLength - 3) + "..."
+        });
+        break;
+      }
+    }
+  }
+
+  console.log(`Optimized search results: ${results.length} → ${optimizedResults.length} results, ${totalContentLength} chars`);
+  return optimizedResults.slice(0, 3); // Maximum 3 results
+}
+
+// Calculate snippet quality score
+function calculateSnippetScore(snippet: string): number {
+  let score = snippet.length;
+
+  // Bonus for containing numbers (dates, statistics)
+  const numberMatches = snippet.match(/\d+/g);
+  if (numberMatches) {
+    score += numberMatches.length * 10;
+  }
+
+  // Bonus for containing current year
+  if (snippet.includes('2024') || snippet.includes('2025')) {
+    score += 50;
+  }
+
+  // Penalty for generic text
+  const genericPhrases = ['click here', 'read more', 'learn more', 'contact us'];
+  for (const phrase of genericPhrases) {
+    if (snippet.toLowerCase().includes(phrase)) {
+      score -= 20;
+    }
+  }
+
+  return score;
 }
 
 // Agent service implementation with improved task creation logic
@@ -721,34 +853,38 @@ async function executeTaskAgent(
       const searchResults = await performWebSearch(analysis.arg, modelSettings);
 
       if (searchResults.length > 0) {
-        const searchContext = searchResults
-          .slice(0, 2)
-          .map(result => `${result.title}: ${result.snippet}`)
-          .join("\n\n");
+        // Create optimized search context
+        const searchContext = createOptimizedSearchContext(searchResults);
 
         const llm = new MultiProviderLLM(modelSettings, sessionToken);
         const prompt = `Answer in "${customLanguage}" language.
 
 GOAL: "${goal}"
 TASK: "${task}"
+SEARCH QUERY: "${analysis.arg}"
 
-Based on the search results below, complete this task with detailed information:
+CURRENT WEB SEARCH RESULTS:
+${searchContext.content}
 
-SEARCH RESULTS:
-${searchContext}
+INSTRUCTIONS:
+1. Combine the search results with your existing knowledge
+2. Focus on the most recent and relevant information from the search results
+3. Provide a comprehensive response that integrates both web findings and your knowledge
+4. Be specific and cite key facts from the search results
+5. If coding is required, provide code in markdown format
 
-Provide a comprehensive response with specific details from the search results. If coding is required, provide code in markdown format.`;
+Provide a detailed response that directly addresses the task using both the search results and your knowledge base.`;
 
         const completion = await llm.call(prompt, {
           goal,
           task,
           customLanguage,
-          searchContext,
+          searchQuery: analysis.arg,
+          searchContext: searchContext.content,
           action: 'execute_task_with_search',
         });
 
-        const sources = searchResults.slice(0, 2).map(r => r.url).join(", ");
-        return `${completion}\n\nSources: ${sources}`;
+        return `${completion}\n\n**Sources:** ${searchContext.sources}`;
       }
     } catch (error) {
       console.error("Search execution error:", error);
@@ -764,7 +900,7 @@ TASK: "${task}"
 
 Complete this task with detailed, actionable information. Be specific and practical in your response. If coding is required, provide code in markdown format.
 
-Provide a comprehensive response that directly addresses the task requirements.`;
+Provide a comprehensive response that directly addresses the task requirements using your existing knowledge base.`;
 
     const completion = await llm.call(prompt, {
       goal,
@@ -782,6 +918,26 @@ Provide a comprehensive response that directly addresses the task requirements.`
     console.error("Task execution error:", error);
     return `Task completed: ${task}\n\nNote: Executed with basic reasoning due to API limitations.`;
   }
+}
+
+// Create optimized search context for LLM integration
+function createOptimizedSearchContext(searchResults: WebSearchResult[]): { content: string; sources: string } {
+  const contextParts: string[] = [];
+  const sources: string[] = [];
+
+  searchResults.forEach((result, index) => {
+    // Create a concise but informative context entry
+    const entry = `${index + 1}. **${result.title.substring(0, 80)}${result.title.length > 80 ? '...' : ''}**
+   ${result.snippet}`;
+
+    contextParts.push(entry);
+    sources.push(result.url);
+  });
+
+  return {
+    content: contextParts.join('\n\n'),
+    sources: sources.join(', ')
+  };
 }
 
 // Fixed createTasksAgent with improved logic

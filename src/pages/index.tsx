@@ -38,6 +38,7 @@ import { authEnabled } from "../utils/env-helper";
 import { LLM_PROVIDERS, PROVIDER_NAMES, DEMO_TOKEN_LIMIT, DEFAULT_MODELS } from "../utils/constants";
 import type { LLMProvider } from "../utils/types";
 import TokenBalance from "../components/TokenBalance";
+import { getValidModelForProvider } from "../utils/modelValidation";
 import {
   saveQueryResponse,
   createSession,
@@ -142,6 +143,15 @@ const Home: NextPage = () => {
 
     localStorage.setItem(key, JSON.stringify(true));
   }, []);
+
+  // Debug effect to monitor provider/model changes
+  useEffect(() => {
+    console.log("Settings updated:", {
+      llmProvider: settingsModel.settings.llmProvider,
+      customModelName: settingsModel.settings.customModelName,
+      timestamp: new Date().toISOString()
+    });
+  }, [settingsModel.settings.llmProvider, settingsModel.settings.customModelName]);
 
   const nameInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -283,30 +293,39 @@ const Home: NextPage = () => {
     setCustomLanguage(lng);
   };
 
-  // Fixed provider change handler
-  const handleProviderChange = (provider: LLMProvider) => {
-    console.log("Changing provider to:", provider);
+  // Provider change handler - properly integrated with settings
+  const handleProviderChange = useCallback((provider: LLMProvider) => {
+    console.log("Home: Changing provider to:", provider);
     settingsModel.updateProvider(provider);
-  };
+  }, [settingsModel]);
 
-  // Fixed model change handler
-  const handleModelChange = (model: string) => {
-    console.log("Changing model to:", model);
+  // Model change handler - properly integrated with settings
+  const handleModelChange = useCallback((model: string) => {
+    console.log("Home: Changing model to:", model);
     settingsModel.updateModel(model);
+  }, [settingsModel]);
+
+  // Get current provider from settings
+  const getCurrentProvider = (): LLMProvider => {
+    const provider = settingsModel.settings.llmProvider || LLM_PROVIDERS.GROQ;
+    console.log("Current provider from settings:", provider);
+    return provider;
   };
 
-  // Fixed current model getter
-  const getCurrentModel = () => {
-    const currentModel = settingsModel.settings.customModelName;
-    const provider = settingsModel.settings.llmProvider || LLM_PROVIDERS.GROQ;
+  // Get current model from settings with validation
+  const getCurrentModel = (): string => {
+    const provider = getCurrentProvider();
+    const modelFromSettings = settingsModel.settings.customModelName;
+    const validModel = getValidModelForProvider(modelFromSettings, provider);
 
-    // If no model is set or it's empty, return the default for the provider
-    if (!currentModel || currentModel.trim() === "") {
-      return DEFAULT_MODELS[provider];
-    }
+    console.log("Current model calculation:", {
+      provider,
+      modelFromSettings,
+      validModel,
+      defaultForProvider: DEFAULT_MODELS[provider]
+    });
 
-    console.log("Current model:", currentModel, "for provider:", provider);
-    return currentModel;
+    return validModel;
   };
 
   const proTitle = (
@@ -343,8 +362,17 @@ const Home: NextPage = () => {
       </Button>
     );
 
-  const currentProvider = settingsModel.settings.llmProvider || LLM_PROVIDERS.GROQ;
+  const currentProvider = getCurrentProvider();
+  const currentModel = getCurrentModel();
   const hasValidConfig = settingsModel.isConfigurationValid();
+
+  console.log("Home render state:", {
+    currentProvider,
+    currentModel,
+    hasValidConfig,
+    settingsLlmProvider: settingsModel.settings.llmProvider,
+    settingsModelName: settingsModel.settings.customModelName
+  });
 
   return (
     <DefaultLayout>
@@ -466,7 +494,7 @@ const Home: NextPage = () => {
                 llmProvider={currentProvider}
                 onProviderChange={handleProviderChange}
                 onModelChange={handleModelChange}
-                currentModel={getCurrentModel()}
+                currentModel={currentModel}
                 sessionToken={sessionToken}
                 onTokensExhausted={handleTokensExhausted}
               />
