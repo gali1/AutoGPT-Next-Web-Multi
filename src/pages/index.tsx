@@ -1,3 +1,5 @@
+// src/pages/index.tsx
+
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { type NextPage, type GetStaticProps } from "next";
 import DefaultLayout from "../layout/default";
@@ -32,6 +34,15 @@ import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useGuestMode } from "../hooks/useGuestMode";
 import { authEnabled } from "../utils/env-helper";
+import { LLM_PROVIDERS, PROVIDER_NAMES } from "../utils/constants";
+import type { LLMProvider } from "../utils/types";
+import {
+  saveQueryResponse,
+  createSession,
+  initializeDatabase,
+  getSessionToken,
+  getCookieId
+} from "../utils/database";
 
 const Home: NextPage = () => {
   const { t, i18n } = useTranslation();
@@ -59,6 +70,8 @@ const Home: NextPage = () => {
   const [showWeChatPayDialog, setShowWeChatPayDialog] = useState(false);
   const [showQQDialog, setShowQQDialog] = useState(false);
   const [customLanguage, setCustomLanguage] = useState<string>(i18n.language);
+  const [sessionToken, setSessionToken] = useState<string>("");
+
   const settingsModel = useSettings();
   const { isValidGuest, isGuestMode } = useGuestMode(
     settingsModel.settings.customGuestKey
@@ -67,11 +80,29 @@ const Home: NextPage = () => {
   const router = useRouter();
   const agentUtils = useAgent();
 
+  // Initialize database and session
+  useEffect(() => {
+    const initializeSession = async () => {
+      try {
+        await initializeDatabase();
+
+        const token = getSessionToken();
+        const cookieId = getCookieId();
+
+        setSessionToken(token);
+        await createSession(token, cookieId);
+      } catch (error) {
+        console.error('Failed to initialize session:', error);
+      }
+    };
+
+    initializeSession();
+  }, []);
+
   useEffect(() => {
     const key = "agentgpt-modal-opened-new";
     const savedModalData = localStorage.getItem(key);
 
-    // Momentarily always run
     setTimeout(() => {
       if (savedModalData == null) {
         setShowHelpDialog(true);
@@ -90,13 +121,26 @@ const Home: NextPage = () => {
     updateIsAgentStopped();
   }, [agent, updateIsAgentStopped]);
 
-  const handleAddMessage = (newMessage: Message) => {
+  const handleAddMessage = useCallback((newMessage: Message) => {
     if (isTask(newMessage)) {
       updateTaskStatus(newMessage);
     }
 
     addMessage(newMessage);
-  };
+
+    // Save to database
+    if (sessionToken && newMessage.value) {
+      const query = newMessage.type === "goal" ? `Goal: ${newMessage.value}` : newMessage.value;
+      const response = newMessage.info || newMessage.value;
+
+      saveQueryResponse(sessionToken, query, response, {
+        type: newMessage.type,
+        taskId: newMessage.taskId,
+        parentTaskId: newMessage.parentTaskId,
+        llmProvider: settingsModel.settings.llmProvider,
+      }).catch(console.error);
+    }
+  }, [addMessage, updateTaskStatus, sessionToken, settingsModel.settings.llmProvider]);
 
   const handlePause = (opts: {
     agentPlaybackControl?: AgentPlaybackControl;
@@ -107,7 +151,7 @@ const Home: NextPage = () => {
   };
 
   const disableDeployAgent =
-    agent != null || isEmptyOrBlank(name) || isEmptyOrBlank(goalInput);
+    agent != null || isEmptyOrBlank(name) || isEmptyOrBlank(goalInput) || !settingsModel.isConfigurationValid();
 
   const handleNewGoal = () => {
     if (
@@ -116,6 +160,11 @@ const Home: NextPage = () => {
       authEnabled
     ) {
       setShowSignInDialog(true);
+      return;
+    }
+
+    if (!settingsModel.isConfigurationValid()) {
+      setShowSettingsDialog(true);
       return;
     }
 
@@ -153,7 +202,6 @@ const Home: NextPage = () => {
       | React.KeyboardEvent<HTMLInputElement>
       | React.KeyboardEvent<HTMLTextAreaElement>
   ) => {
-    // Only Enter is pressed, execute the function
     if (e.ctrlKey && e.key === "Enter" && !disableDeployAgent) {
       if (isAgentPaused) {
         handleContinue();
@@ -174,6 +222,10 @@ const Home: NextPage = () => {
       locale: lng,
     });
     setCustomLanguage(lng);
+  };
+
+  const handleProviderChange = (provider: LLMProvider) => {
+    settingsModel.updateProvider(provider);
   };
 
   const proTitle = (
@@ -209,6 +261,9 @@ const Home: NextPage = () => {
         )}
       </Button>
     );
+
+  const currentProvider = settingsModel.settings.llmProvider || LLM_PROVIDERS.GROQ;
+  const hasValidConfig = settingsModel.isConfigurationValid();
 
   return (
     <DefaultLayout>
@@ -268,6 +323,14 @@ const Home: NextPage = () => {
               </div>
               <div className="mt-1 text-center font-mono text-[0.7em] font-bold text-white">
                 <p>{t("sub-title")}</p>
+                <p className="text-xs text-blue-400 mt-1">
+                  {t("powered-by")} {PROVIDER_NAMES[currentProvider]}
+                  {!hasValidConfig && (
+                    <span className="text-red-400 ml-2">
+                      ({t("configuration-required")})
+                    </span>
+                  )}
+                </p>
               </div>
             </div>
 
@@ -291,6 +354,8 @@ const Home: NextPage = () => {
                 scrollToBottom
                 displaySettings
                 openSorryDialog={() => setShowSorryDialog(true)}
+                llmProvider={currentProvider}
+                onProviderChange={handleProviderChange}
               />
               {(agent || tasks.length > 0) && <TaskWindow />}
             </Expand>
@@ -346,6 +411,12 @@ const Home: NextPage = () => {
                 ) : (
                   t("stop-agent")
                 )}
+              </Button>
+              <Button
+                onClick={() => setShowSettingsDialog(true)}
+                enabledClassName={"bg-gray-600 hover:bg-gray-500"}
+              >
+                {t("settings")}
               </Button>
             </Expand>
           </div>

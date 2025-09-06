@@ -1,4 +1,5 @@
 // @ts-check
+// src/env/schema.mjs
 import { z } from "zod";
 import { v4 } from "uuid";
 
@@ -43,10 +44,20 @@ const validateNextUrl = () => {
  */
 export const serverSchema = z.object({
   DATABASE_URL: validateDataBaseUrl(),
+  POSTGRES_URL: z.string().url().optional(),
   NODE_ENV: z.enum(["development", "test", "production"]),
   NEXTAUTH_SECRET: requiredAuthEnabledForProduction(),
   NEXTAUTH_URL: validateNextUrl(),
-  OPENAI_API_KEY: z.string(),
+
+  // Multi-API Support
+  GROQ_API_KEY: z.string().optional(),
+  OPENROUTER_API_KEY: z.string().optional(),
+  COHERE_API_KEY: z.string().optional(),
+
+  // Web Search
+  GOOGLE_SEARCH_API_KEY: z.string().optional(),
+  GOOGLE_SEARCH_ENGINE_ID: z.string().optional(),
+  SERP_API_KEY: z.string().optional(),
 
   GOOGLE_CLIENT_ID: requiredAuthEnabledForProduction(),
   GOOGLE_CLIENT_SECRET: requiredAuthEnabledForProduction(),
@@ -70,11 +81,22 @@ export const serverSchema = z.object({
  * @type {{ [k in keyof z.input<typeof serverSchema>]: string | undefined }}
  */
 export const serverEnv = {
-  DATABASE_URL: process.env.DATABASE_URL ?? "file:./db.sqlite",
+  DATABASE_URL: process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? "file:./db.sqlite",
+  POSTGRES_URL: process.env.POSTGRES_URL,
   NODE_ENV: process.env.NODE_ENV,
   NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET ?? v4(),
   NEXTAUTH_URL: process.env.NEXTAUTH_URL ?? "http://localhost:3000",
-  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+
+  // Multi-API Support
+  GROQ_API_KEY: process.env.GROQ_API_KEY ?? process.env.NEXT_PUBLIC_GROQ_API_KEY,
+  OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ?? process.env.NEXT_PUBLIC_OPENROUTER_API_KEY,
+  COHERE_API_KEY: process.env.COHERE_API_KEY ?? process.env.NEXT_PUBLIC_COHERE_API_KEY,
+
+  // Web Search
+  GOOGLE_SEARCH_API_KEY: process.env.GOOGLE_SEARCH_API_KEY,
+  GOOGLE_SEARCH_ENGINE_ID: process.env.GOOGLE_SEARCH_ENGINE_ID,
+  SERP_API_KEY: process.env.SERP_API_KEY,
+
   GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
   GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID,
@@ -99,7 +121,6 @@ export const serverEnv = {
  * To expose them to the client, prefix them with `NEXT_PUBLIC_`.
  */
 export const clientSchema = z.object({
-  // NEXT_PUBLIC_CLIENTVAR: z.string(),
   NEXT_PUBLIC_VERCEL_ENV: z.enum(["production", "preview", "development"]),
   NEXT_PUBLIC_STRIPE_DONATION_ENABLED: stringToBoolean().optional(),
   NEXT_PUBLIC_FF_AUTH_ENABLED: stringToBoolean(),
@@ -109,6 +130,10 @@ export const clientSchema = z.object({
   NEXT_PUBLIC_VERCEL_URL: z.string().optional(),
   NEXT_PUBLIC_GUEST_KEY: z.string().optional(),
   NEXT_PUBLIC_WEB_SEARCH_ENABLED: stringToBoolean(),
+  NEXT_PUBLIC_GROQ_API_KEY: z.string().optional(),
+  NEXT_PUBLIC_OPENROUTER_API_KEY: z.string().optional(),
+  NEXT_PUBLIC_COHERE_API_KEY: z.string().optional(),
+  NEXT_PUBLIC_DEFAULT_LLM_PROVIDER: z.enum(["groq", "openrouter", "cohere"]).default("groq"),
 });
 
 /**
@@ -131,4 +156,8 @@ export const clientEnv = {
     process.env.NEXT_PUBLIC_FF_MOCK_MODE_ENABLED,
   NEXT_PUBLIC_GUEST_KEY: process.env.NEXT_PUBLIC_GUEST_KEY ?? "",
   NEXT_PUBLIC_WEB_SEARCH_ENABLED: process.env.NEXT_PUBLIC_WEB_SEARCH_ENABLED,
+  NEXT_PUBLIC_GROQ_API_KEY: process.env.NEXT_PUBLIC_GROQ_API_KEY,
+  NEXT_PUBLIC_OPENROUTER_API_KEY: process.env.NEXT_PUBLIC_OPENROUTER_API_KEY,
+  NEXT_PUBLIC_COHERE_API_KEY: process.env.NEXT_PUBLIC_COHERE_API_KEY,
+  NEXT_PUBLIC_DEFAULT_LLM_PROVIDER: process.env.NEXT_PUBLIC_DEFAULT_LLM_PROVIDER ?? "groq",
 };

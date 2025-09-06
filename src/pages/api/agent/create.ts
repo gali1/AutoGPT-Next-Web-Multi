@@ -1,43 +1,193 @@
+// src/pages/api/agent/create.ts
+
 import type { NextRequest } from "next/server";
-import { NextResponse } from "next/server";
 import type { RequestBody } from "../../../utils/interfaces";
 import AgentService from "../../../services/agent-service";
-import { serverError } from "../responses";
+import { saveQueryResponse } from "../../../utils/database";
+import { v4 as uuidv4 } from "uuid";
 
 export const config = {
   runtime: "edge",
 };
 
+// SSE utilities
+const SSEUtils = {
+  setupSSE: (response: Response) => {
+    const headers = new Headers({
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    });
+    return headers;
+  },
+
+  sendEvent: (encoder: TextEncoder, data: any): Uint8Array => {
+    const jsonData = typeof data === 'string' ? data : JSON.stringify(data);
+    return encoder.encode(`data: ${jsonData}\n\n`);
+  },
+
+  sendTypedEvent: (encoder: TextEncoder, type: string, data: any): Uint8Array => {
+    const event = { ...data, type, timestamp: new Date().toISOString() };
+    return encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
+  },
+
+  events: {
+    content: (encoder: TextEncoder, content: string, meta = {}) => {
+      return SSEUtils.sendTypedEvent(encoder, "content", { content, ...meta });
+    },
+    error: (encoder: TextEncoder, error: string | Error, meta = {}) => {
+      const errorObj = {
+        error: typeof error === 'string' ? error : error.message || "Unknown error",
+        ...meta
+      };
+      return SSEUtils.sendTypedEvent(encoder, "error", errorObj);
+    },
+    status: (encoder: TextEncoder, message: string, meta = {}) => {
+      return SSEUtils.sendTypedEvent(encoder, "status", { message, ...meta });
+    },
+    complete: (encoder: TextEncoder, result: any, meta = {}) => {
+      return SSEUtils.sendTypedEvent(encoder, "complete", { result, ...meta });
+    },
+  }
+};
+
 const handler = async (request: NextRequest) => {
+  const requestId = uuidv4().substring(0, 8);
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 200, headers: SSEUtils.setupSSE(new Response()) });
+  }
+
+  if (request.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+
+  const encoder = new TextEncoder();
+  const headers = SSEUtils.setupSSE(new Response());
+
+  let requestBody: RequestBody;
   try {
-    const {
-      modelSettings,
-      goal,
-      tasks,
-      lastTask,
-      result,
-      completedTasks,
-      customLanguage,
-    } = (await request.json()) as RequestBody;
-
-    if (tasks === undefined || lastTask === undefined || result === undefined) {
-      return;
-    }
-
-    const newTasks = await AgentService.createTasksAgent(
-      modelSettings,
-      goal,
-      tasks,
-      lastTask,
-      result,
-      completedTasks,
-      customLanguage
+    requestBody = await request.json() as RequestBody;
+  } catch (error) {
+    return new Response(
+      encoder.encode(JSON.stringify({ error: "Invalid JSON in request body" })),
+      { status: 400, headers: { "Content-Type": "application/json" } }
     );
+  }
 
-    return NextResponse.json({ newTasks });
-  } catch (e) {}
+  const {
+    modelSettings,
+    goal,
+    tasks,
+    lastTask,
+    result,
+    completedTasks,
+    customLanguage,
+    sessionToken
+  } = requestBody;
 
-  return serverError();
+  if (!tasks || !lastTask || !result) {
+    return new Response(
+      encoder.encode(JSON.stringify({ error: "Tasks, lastTask, and result are required" })),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(SSEUtils.events.status(encoder, "Creating new tasks based on previous results", { requestId }));
+    },
+
+    async pull(controller) {
+      try {
+        const startTime = Date.now();
+
+        // Send progress updates
+        controller.enqueue(SSEUtils.events.status(encoder, "Analyzing completed task results", { requestId }));
+
+        await new Promise(resolve => setTimeout(resolve, 100)); // Brief delay for UX
+
+        controller.enqueue(SSEUtils.events.status(encoder, "Generating new tasks to advance toward goal", { requestId }));
+
+        // Call agent service
+        const newTasks = await AgentService.createTasksAgent(
+          modelSettings,
+          goal,
+          tasks,
+          lastTask,
+          result,
+          completedTasks,
+          customLanguage
+        );
+
+        const processingTime = Date.now() - startTime;
+
+        // Save to database if session token provided
+        if (sessionToken) {
+          try {
+            await saveQueryResponse(
+              sessionToken,
+              `Task Creation - Last Task: ${lastTask}`,
+              JSON.stringify(newTasks),
+              {
+                type: "task_creation",
+                llmProvider: modelSettings.llmProvider,
+                processingTime,
+                newTaskCount: newTasks.length,
+                completedTaskCount: completedTasks?.length || 0,
+                goal,
+                requestId
+              }
+            );
+          } catch (dbError) {
+            console.error("Database save failed:", dbError);
+          }
+        }
+
+        // Send task creation updates
+        if (newTasks.length > 0) {
+          controller.enqueue(SSEUtils.events.status(encoder, `Created ${newTasks.length} new task(s)`, { requestId }));
+
+          // Send each new task individually for better UX
+          for (let i = 0; i < newTasks.length; i++) {
+            controller.enqueue(SSEUtils.events.content(encoder, `New Task ${i + 1}: ${newTasks[i]}`, {
+              requestId,
+              taskIndex: i,
+              totalTasks: newTasks.length
+            }));
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+        } else {
+          controller.enqueue(SSEUtils.events.status(encoder, "No new tasks needed - goal may be near completion", { requestId }));
+        }
+
+        // Send completion
+        controller.enqueue(SSEUtils.events.complete(encoder, {
+          newTasks,
+          processingTime,
+          taskCount: newTasks.length
+        }, { requestId }));
+
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+
+      } catch (error) {
+        console.error("Task creation error:", error);
+
+        const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+        controller.enqueue(SSEUtils.events.error(encoder, errorMessage, { requestId }));
+
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, { headers });
 };
 
 export default handler;

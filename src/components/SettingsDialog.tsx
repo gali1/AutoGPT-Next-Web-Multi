@@ -1,3 +1,5 @@
+// src/components/SettingsDialog.tsx
+
 import React, { useEffect } from "react";
 import { useTranslation, Trans } from "next-i18next";
 import Button from "./Button";
@@ -10,12 +12,22 @@ import {
   FaCoins,
   FaCode,
   FaServer,
+  FaSearch,
+  FaCog,
 } from "react-icons/fa";
 import Dialog from "./Dialog";
 import Input from "./Input";
-import { GPT_MODEL_NAMES, GPT_4 } from "../utils/constants";
+import {
+  GROQ_MODELS,
+  OPENROUTER_MODELS,
+  COHERE_MODELS,
+  LLM_PROVIDERS,
+  PROVIDER_NAMES,
+  MODEL_DISPLAY_NAMES,
+  DEFAULT_MODELS,
+} from "../utils/constants";
 import Accordion from "./Accordion";
-import type { ModelSettings, SettingModel } from "../utils/types";
+import type { ModelSettings, SettingModel, LLMProvider } from "../utils/types";
 import { useGuestMode } from "../hooks/useGuestMode";
 import clsx from "clsx";
 
@@ -43,9 +55,23 @@ export const SettingsDialog: React.FC<{
     });
   };
 
+  const getApiKey = (provider: LLMProvider): string => {
+    switch (provider) {
+      case "groq":
+        return settings.groqApiKey || settings.customApiKey || "";
+      case "openrouter":
+        return settings.openrouterApiKey || settings.customApiKey || "";
+      case "cohere":
+        return settings.cohereApiKey || settings.customApiKey || "";
+      default:
+        return settings.customApiKey || "";
+    }
+  };
+
   const keyIsValid = (key: string | undefined) => {
-    const pattern = /^(sk-[a-zA-Z0-9]{48}|[a-fA-F0-9]{32})$/;
-    return key && pattern.test(key);
+    if (!key) return false;
+    // Basic validation - check for minimum length and format
+    return key.length > 20;
   };
 
   const urlIsValid = (url: string | undefined) => {
@@ -56,24 +82,42 @@ export const SettingsDialog: React.FC<{
     return true;
   };
 
+  const getCurrentProvider = (): LLMProvider => {
+    return settings.llmProvider || "groq";
+  };
+
+  const getCurrentModels = () => {
+    const provider = getCurrentProvider();
+    switch (provider) {
+      case "groq":
+        return GROQ_MODELS;
+      case "openrouter":
+        return OPENROUTER_MODELS;
+      case "cohere":
+        return COHERE_MODELS;
+      default:
+        return GROQ_MODELS;
+    }
+  };
+
+  const getCurrentModelName = () => {
+    return settings.customModelName || DEFAULT_MODELS[getCurrentProvider()];
+  };
+
   const handleSave = () => {
-    if (!isGuestMode && !keyIsValid(settings.customApiKey)) {
-      alert(
-        t(
-          "Key is invalid, please ensure that you have set up billing in your OpenAI account!"
-        )
-      );
+    const provider = getCurrentProvider();
+    const apiKey = getApiKey(provider);
+
+    if (!isGuestMode && !keyIsValid(apiKey)) {
+      alert(t("Key is invalid, please ensure you have set up a valid API key!"));
       return;
     }
 
     if (!urlIsValid(settings.customEndPoint)) {
-      alert(
-        t(
-          "Endpoint URL is invalid. Please ensure that you have set a correct URL."
-        )
-      );
+      alert(t("Endpoint URL is invalid. Please ensure that you have set a correct URL."));
       return;
     }
+
     customSettings.saveSettings(settings);
     close();
     return;
@@ -84,7 +128,148 @@ export const SettingsDialog: React.FC<{
     close();
   };
 
-  const disabled = !isGuestMode && !settings.customApiKey;
+  const currentProvider = getCurrentProvider();
+  const disabled = !isGuestMode && !getApiKey(currentProvider);
+
+  const providerSettings = (
+    <div className="flex flex-col gap-2">
+      <div className="mb-4">
+        <label className="block text-sm font-medium mb-2">{t("llm-provider")}</label>
+        <div className="grid grid-cols-3 gap-2">
+          {Object.entries(LLM_PROVIDERS).map(([key, value]) => (
+            <button
+              key={value}
+              type="button"
+              className={clsx(
+                "p-2 rounded-lg border-2 transition-all text-center",
+                currentProvider === value
+                  ? "border-[#1E88E5] bg-[#1E88E5]/20"
+                  : "border-white/20 hover:border-white/40"
+              )}
+              onClick={() => updateSettings("llmProvider", value)}
+            >
+              {PROVIDER_NAMES[value]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {currentProvider === "groq" && (
+        <Input
+          left={
+            <>
+              <FaKey />
+              <span className="ml-2">{t("groq-api-key")}</span>
+            </>
+          }
+          placeholder="gsk-..."
+          value={settings.groqApiKey || ""}
+          onChange={(e) => updateSettings("groqApiKey", e.target.value)}
+          type="password"
+        />
+      )}
+
+      {currentProvider === "openrouter" && (
+        <Input
+          left={
+            <>
+              <FaKey />
+              <span className="ml-2">{t("openrouter-api-key")}</span>
+            </>
+          }
+          placeholder="sk-or-v1-..."
+          value={settings.openrouterApiKey || ""}
+          onChange={(e) => updateSettings("openrouterApiKey", e.target.value)}
+          type="password"
+        />
+      )}
+
+      {currentProvider === "cohere" && (
+        <Input
+          left={
+            <>
+              <FaKey />
+              <span className="ml-2">{t("cohere-api-key")}</span>
+            </>
+          }
+          placeholder="..."
+          value={settings.cohereApiKey || ""}
+          onChange={(e) => updateSettings("cohereApiKey", e.target.value)}
+          type="password"
+        />
+      )}
+
+      <Input
+        left={
+          <>
+            <FaMicrochip />
+            <span className="ml-2">{t("model")}</span>
+          </>
+        }
+        type="combobox"
+        value={getCurrentModelName()}
+        onChange={() => null}
+        setValue={(value) => updateSettings("customModelName", value)}
+        attributes={{
+          options: getCurrentModels().map(model => ({
+            value: model,
+            label: MODEL_DISPLAY_NAMES[model as keyof typeof MODEL_DISPLAY_NAMES] || model
+          })).map(item => item.value)
+        }}
+        disabled={disabled}
+      />
+    </div>
+  );
+
+  const webSearchSettings = (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2 mb-2">
+        <input
+          type="checkbox"
+          id="enableWebSearch"
+          checked={settings.enableWebSearch || false}
+          onChange={(e) => updateSettings("enableWebSearch", e.target.checked)}
+          className="rounded"
+        />
+        <label htmlFor="enableWebSearch" className="text-sm font-medium">
+          {t("enable-web-search")}
+        </label>
+      </div>
+
+      {settings.enableWebSearch && (
+        <div className="ml-6">
+          <label className="block text-sm font-medium mb-2">{t("search-provider")}</label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              className={clsx(
+                "p-2 rounded-lg border-2 transition-all text-center",
+                (settings.webSearchProvider || "google") === "google"
+                  ? "border-[#1E88E5] bg-[#1E88E5]/20"
+                  : "border-white/20 hover:border-white/40"
+              )}
+              onClick={() => updateSettings("webSearchProvider", "google")}
+            >
+              Google
+            </button>
+            <button
+              type="button"
+              className={clsx(
+                "p-2 rounded-lg border-2 transition-all text-center",
+                settings.webSearchProvider === "serp"
+                  ? "border-[#1E88E5] bg-[#1E88E5]/20"
+                  : "border-white/20 hover:border-white/40"
+              )}
+              onClick={() => updateSettings("webSearchProvider", "serp")}
+            >
+              SERP
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   const advancedSettings = (
     <div className="flex flex-col gap-2">
       <Input
@@ -95,7 +280,7 @@ export const SettingsDialog: React.FC<{
           </>
         }
         disabled={disabled}
-        value={settings.customEndPoint}
+        value={settings.customEndPoint || ""}
         onChange={(e) => updateSettings("customEndPoint", e.target.value)}
       />
       <Input
@@ -105,7 +290,7 @@ export const SettingsDialog: React.FC<{
             <span className="ml-2">{t("temp")}</span>
           </>
         }
-        value={settings.customTemperature}
+        value={settings.customTemperature || 0.9}
         onChange={(e) =>
           updateSettings("customTemperature", parseFloat(e.target.value))
         }
@@ -127,7 +312,7 @@ export const SettingsDialog: React.FC<{
             <span className="ml-2">{t("loop")}</span>
           </>
         }
-        value={settings.customMaxLoops}
+        value={settings.customMaxLoops || 4}
         disabled={disabled}
         onChange={(e) =>
           updateSettings("customMaxLoops", parseFloat(e.target.value))
@@ -184,56 +369,22 @@ export const SettingsDialog: React.FC<{
       }
     >
       <p>{t("usage")}</p>
-      <p
-        className={clsx(
-          "my-2",
-          settings.customModelName === GPT_4 &&
-            "rounded-md border-[2px] border-white/10 bg-yellow-300 text-black"
-        )}
-      >
+      <p className="my-2 text-sm text-yellow-300">
         <FaExclamationCircle className="inline-block" />
-        &nbsp;
-        <Trans i18nKey="gpt4-notice" ns="settings">
-          <b>
-            To use the GPT-4 model, you need to also provide the API key for
-            GPT-4. You can request for it&nbsp;
-            <a
-              href="https://openai.com/waitlist/gpt-4-api"
-              className="text-blue-500"
-            >
-              here
-            </a>
-            . (ChatGPT Plus subscription will not work)
-          </b>
-        </Trans>
+        &nbsp;{t("multi-provider-notice")}
       </p>
+
       <div className="mt-2 flex flex-col gap-2">
-        <Input
-          left={
-            <>
-              <FaKey />
-              <span className="ml-2">{t("key")}</span>
-            </>
-          }
-          placeholder={"sk-..."}
-          value={settings.customApiKey}
-          onChange={(e) => updateSettings("customApiKey", e.target.value)}
-          type="password"
+        <Accordion
+          child={providerSettings}
+          name={t("provider-settings")}
         />
-        <Input
-          left={
-            <>
-              <FaMicrochip />
-              <span className="ml-2">{t("model")}</span>
-            </>
-          }
-          type="combobox"
-          value={settings.customModelName}
-          onChange={() => null}
-          setValue={(e) => updateSettings("customModelName", e)}
-          attributes={{ options: GPT_MODEL_NAMES }}
-          disabled={disabled}
+
+        <Accordion
+          child={webSearchSettings}
+          name={t("web-search-settings")}
         />
+
         {isGuestMode && (
           <Input
             left={
@@ -242,27 +393,21 @@ export const SettingsDialog: React.FC<{
                 <span className="ml-2">{t("guest-key")}</span>
               </>
             }
-            value={settings.customGuestKey}
+            value={settings.customGuestKey || ""}
             onChange={(e) => updateSettings("customGuestKey", e.target.value)}
             type="password"
           />
         )}
+
         <Accordion
           child={advancedSettings}
           name={t("advanced-settings")}
-        ></Accordion>
+        />
       </div>
+
       <Trans i18nKey="api-key-notice" ns="settings">
         <strong className="mt-10">
-          NOTE: To get a key, sign up for an OpenAI account and visit the
-          following
-          <a
-            href="https://platform.openai.com/account/api-keys"
-            className="text-blue-500"
-          >
-            link.
-          </a>
-          This key is only used in the current browser session
+          NOTE: API keys are only used in the current browser session. Choose your preferred provider and model above.
         </strong>
       </Trans>
     </Dialog>

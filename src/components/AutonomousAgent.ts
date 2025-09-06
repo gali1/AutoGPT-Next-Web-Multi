@@ -1,3 +1,5 @@
+// src/components/AutonomousAgent.ts
+
 import axios from "axios";
 import type { ModelSettings, GuestSettings } from "../utils/types";
 import type { Analysis } from "../services/agent-service";
@@ -32,6 +34,7 @@ import type {
 } from "../types/agentTypes";
 import { useAgentStore, useMessageStore } from "./stores";
 import { i18n } from "next-i18next";
+import { getSessionToken } from "../utils/database";
 
 const TIMEOUT_LONG = 1000;
 const TIMOUT_SHORT = 800;
@@ -49,6 +52,7 @@ class AutonomousAgent {
   _id: string;
   mode: AgentMode;
   playbackControl: AgentPlaybackControl;
+  sessionToken: string;
 
   completedTasks: string[] = [];
   isRunning = false;
@@ -84,6 +88,7 @@ class AutonomousAgent {
     this.playbackControl =
       playbackControl || this.mode == PAUSE_MODE ? AGENT_PAUSE : AGENT_PLAY;
     this.currentTask = undefined;
+    this.sessionToken = getSessionToken();
   }
 
   async run() {
@@ -100,17 +105,17 @@ class AutonomousAgent {
 
   async startGoal() {
     const { isGuestMode, isValidGuest } = this.guestSettings;
-    if (isGuestMode && !isValidGuest && !this.modelSettings.customApiKey) {
+    if (isGuestMode && !isValidGuest && !this.hasValidApiKey()) {
       this.sendErrorMessage(
         `${i18n?.t("errors.invalid-guest-key", { ns: "chat" })}`
       );
       this.stopAgent();
       return;
     }
+
     this.sendGoalMessage();
     this.sendThinkingMessage();
 
-    // Initialize by getting taskValues
     try {
       const taskValues = await this.getInitialTasks();
       for (const value of taskValues) {
@@ -152,10 +157,8 @@ class AutonomousAgent {
       return;
     }
 
-    // Wait before starting
     await new Promise((r) => setTimeout(r, TIMEOUT_LONG));
 
-    // Start with first task
     const currentTask = this.getRemainingTasks()[0] as Task;
     this.sendMessage({ ...currentTask, status: TASK_STATUS_EXECUTING });
 
@@ -163,12 +166,9 @@ class AutonomousAgent {
 
     this.sendThinkingMessage(currentTask.taskId);
 
-    // Default to reasoning
     let analysis: Analysis = { action: "reason", arg: "" };
 
-    // If enabled, analyze what tool to use
     if (useAgentStore.getState().isWebSearchEnabled) {
-      // Analyze how to execute a task: Reason, web search, other tools...
       analysis = await this.analyzeTask(currentTask.value);
       this.sendAnalysisMessage(analysis, currentTask.taskId);
     }
@@ -182,11 +182,9 @@ class AutonomousAgent {
 
     this.completedTasks.push(currentTask.value || "");
 
-    // Wait before adding tasks
     await new Promise((r) => setTimeout(r, TIMEOUT_LONG));
     this.sendThinkingMessage(currentTask.taskId);
 
-    // Add new tasks
     try {
       const newTasks: Task[] = (
         await this.getAdditionalTasks(currentTask.value, result)
@@ -230,10 +228,8 @@ class AutonomousAgent {
       return;
     }
 
-    // decide whether to pause agent when pause mode is enabled
     this.isRunning = !(this.playbackControl === AGENT_PAUSE);
 
-    // reset playbackControl to pause so agent pauses on next set of task(s)
     if (this.playbackControl === AGENT_PLAY) {
       this.playbackControl = AGENT_PAUSE;
     }
@@ -244,17 +240,28 @@ class AutonomousAgent {
       ? DEFAULT_MAX_LOOPS_PAID
       : DEFAULT_MAX_LOOPS_FREE;
 
-    return !!this.modelSettings.customApiKey
+    return this.hasValidApiKey()
       ? this.modelSettings.customMaxLoops || DEFAULT_MAX_LOOPS_CUSTOM_API_KEY
       : defaultLoops;
   }
 
+  private hasValidApiKey(): boolean {
+    const provider = this.modelSettings.llmProvider || "groq";
+
+    switch (provider) {
+      case "groq":
+        return !!(this.modelSettings.groqApiKey || this.modelSettings.customApiKey);
+      case "openrouter":
+        return !!(this.modelSettings.openrouterApiKey || this.modelSettings.customApiKey);
+      case "cohere":
+        return !!(this.modelSettings.cohereApiKey || this.modelSettings.customApiKey);
+      default:
+        return !!this.modelSettings.customApiKey;
+    }
+  }
+
   async getInitialTasks(): Promise<string[]> {
     if (this.shouldRunClientSide()) {
-      //FIXME
-      // if (!env.NEXT_PUBLIC_FF_MOCK_MODE_ENABLED) {
-      //   await testConnection(this.modelSettings);
-      // }
       return await AgentService.startGoalAgent(
         this.modelSettings,
         this.goal,
@@ -266,10 +273,14 @@ class AutonomousAgent {
       modelSettings: this.modelSettings,
       goal: this.goal,
       customLanguage: this.customLanguage,
+      sessionToken: this.sessionToken,
     };
-    const res = await this.post(`/api/agent/start`, data);
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access,@typescript-eslint/no-unsafe-argument
+    if (this.shouldUseStreaming()) {
+      return await this.handleStreamingRequest("/api/agent/start", data);
+    }
+
+    const res = await this.post(`/api/agent/start`, data);
     return res.data.newTasks as string[];
   }
 
@@ -299,9 +310,14 @@ class AutonomousAgent {
       result: result,
       completedTasks: this.completedTasks,
       customLanguage: this.customLanguage,
+      sessionToken: this.sessionToken,
     };
+
+    if (this.shouldUseStreaming()) {
+      return await this.handleStreamingRequest("/api/agent/create", data);
+    }
+
     const res = await this.post(`/api/agent/create`, data);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument,@typescript-eslint/no-unsafe-member-access
     return res.data.newTasks as string[];
   }
 
@@ -319,14 +335,19 @@ class AutonomousAgent {
       goal: this.goal,
       task: task,
       customLanguage: this.customLanguage,
+      sessionToken: this.sessionToken,
     };
+
+    if (this.shouldUseStreaming()) {
+      const result = await this.handleStreamingRequest("/api/agent/analyze", data);
+      return result as Analysis;
+    }
+
     const res = await this.post("/api/agent/analyze", data);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access,@typescript-eslint/no-unsafe-argument
     return res.data.response as Analysis;
   }
 
   async executeTask(task: string, analysis: Analysis): Promise<string> {
-    // Run search server side since clients won't have a key
     if (this.shouldRunClientSide() && analysis.action !== "search") {
       return await AgentService.executeTaskAgent(
         this.modelSettings,
@@ -343,10 +364,81 @@ class AutonomousAgent {
       task: task,
       analysis: analysis,
       customLanguage: this.customLanguage,
+      sessionToken: this.sessionToken,
     };
+
+    if (this.shouldUseStreaming()) {
+      return await this.handleStreamingRequest("/api/agent/execute", data);
+    }
+
     const res = await this.post("/api/agent/execute", data);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access,@typescript-eslint/no-unsafe-argument
     return res.data.response as string;
+  }
+
+  private async handleStreamingRequest(url: string, data: RequestBody): Promise<any> {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(data),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("No response body");
+      }
+
+      let result: any = null;
+      const decoder = new TextDecoder();
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') {
+                return result;
+              }
+
+              try {
+                const parsed = JSON.parse(data);
+
+                if (parsed.type === 'status') {
+                  console.log('Status:', parsed.message);
+                } else if (parsed.type === 'content') {
+                  console.log('Content:', parsed.content);
+                } else if (parsed.type === 'complete') {
+                  result = parsed.result;
+                } else if (parsed.type === 'error') {
+                  throw new Error(parsed.error);
+                }
+              } catch (parseError) {
+                // Ignore parse errors for non-JSON lines
+              }
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      return result;
+    } catch (error) {
+      console.error('Streaming request failed:', error);
+      throw error;
+    }
   }
 
   private async post(url: string, data: RequestBody) {
@@ -366,7 +458,11 @@ class AutonomousAgent {
   }
 
   private shouldRunClientSide() {
-    return !!this.modelSettings.customApiKey;
+    return this.hasValidApiKey();
+  }
+
+  private shouldUseStreaming() {
+    return !this.shouldRunClientSide();
   }
 
   updatePlayBackControl(newPlaybackControl: AgentPlaybackControl) {
@@ -400,7 +496,7 @@ class AutonomousAgent {
 
   sendLoopMessage() {
     let value = "";
-    if (this.modelSettings.customApiKey || this.guestSettings.isGuestMode) {
+    if (this.hasValidApiKey() || this.guestSettings.isGuestMode) {
       value = `${i18n?.t("loop-with-filled-customApiKey", { ns: "chat" })}`;
     } else {
       value = `${i18n?.t("loop-with-empty-customApiKey", { ns: "chat" })}`;
@@ -420,6 +516,7 @@ class AutonomousAgent {
       taskId: this.currentTask?.taskId,
     });
   }
+
   sendCompletedMessage() {
     this.sendMessage({
       type: MESSAGE_TYPE_SYSTEM,
@@ -429,8 +526,6 @@ class AutonomousAgent {
   }
 
   sendAnalysisMessage(analysis: Analysis, taskId?: string) {
-    // Hack to send message with generic test. Should use a different type in the future
-
     let message = `${i18n?.t("generating-response", { ns: "chat" })}`;
     if (analysis.action == "search") {
       message = `${i18n?.t("searching-web-for", {
@@ -462,26 +557,6 @@ class AutonomousAgent {
     });
   }
 }
-
-const testConnection = async (modelSettings: ModelSettings) => {
-  // A dummy connection to see if the key is valid
-  // Can't use LangChain / OpenAI libraries to test because they have retries in place
-  return await axios.post(
-    "https://api.openai.com/v1/chat/completions",
-    {
-      model: modelSettings.customModelName,
-      messages: [{ role: "user", content: "Say this is a test" }],
-      max_tokens: 7,
-      temperature: 0,
-    },
-    {
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${modelSettings.customApiKey ?? ""}`,
-      },
-    }
-  );
-};
 
 const getMessageFromError = (e: unknown) => {
   let message = `${i18n?.t("errors.accessing-apis", { ns: "chat" })}`;

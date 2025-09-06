@@ -1,6 +1,8 @@
+// src/components/ChatWindow.tsx
+
 import type { ReactNode } from "react";
 import React, { useEffect, useRef, useState } from "react";
-import { FaClipboard, FaImage, FaSave, FaPlay, FaPause } from "react-icons/fa";
+import { FaClipboard, FaImage, FaSave, FaPlay, FaPause, FaSearch, FaCog } from "react-icons/fa";
 import PopIn from "./motions/popin";
 import Expand from "./motions/expand";
 import * as htmlToImage from "html-to-image";
@@ -31,6 +33,9 @@ import MarkdownRenderer from "./MarkdownRenderer";
 import { Switch } from "./Switch";
 import { env } from "../env/client.mjs";
 import { useTranslation, Trans } from "next-i18next";
+import { PROVIDER_NAMES, LLM_PROVIDERS } from "../utils/constants";
+import type { LLMProvider } from "../utils/types";
+import TokenBalance from "./TokenBalance";
 
 interface ChatWindowProps extends HeaderProps {
   children?: ReactNode;
@@ -39,6 +44,10 @@ interface ChatWindowProps extends HeaderProps {
   scrollToBottom?: boolean;
   displaySettings?: boolean;
   openSorryDialog?: () => void;
+  llmProvider?: LLMProvider;
+  onProviderChange?: (provider: LLMProvider) => void;
+  sessionToken?: string;
+  onTokensExhausted?: () => void;
 }
 
 const messageListId = "chat-window-message-list";
@@ -53,6 +62,10 @@ const ChatWindow = ({
   scrollToBottom,
   displaySettings,
   openSorryDialog,
+  llmProvider = LLM_PROVIDERS.GROQ,
+  onProviderChange,
+  sessionToken,
+  onTokensExhausted,
 }: ChatWindowProps) => {
   const { t } = useTranslation(["chat", "common"]);
   const [hasUserScrolled, setHasUserScrolled] = useState(false);
@@ -66,14 +79,11 @@ const ChatWindow = ({
 
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = event.currentTarget;
-
-    // Use has scrolled if we have scrolled up at all from the bottom
     const hasUserScrolled = scrollTop < scrollHeight - clientHeight - 10;
     setHasUserScrolled(hasUserScrolled);
   };
 
   useEffect(() => {
-    // Scroll to bottom on re-renders
     if (scrollToBottom && scrollRef && scrollRef.current) {
       if (!hasUserScrolled) {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -82,7 +92,6 @@ const ChatWindow = ({
   });
 
   const handleChangeWebSearch = (value: boolean) => {
-    // Change this value when we can no longer support web search
     const WEB_SEARCH_ALLOWED = env.NEXT_PUBLIC_WEB_SEARCH_ENABLED as boolean;
 
     if (WEB_SEARCH_ALLOWED) {
@@ -94,12 +103,12 @@ const ChatWindow = ({
   };
 
   const messageDepth = (messages: Message[], message: Message, depth = 0) => {
-    if (depth > 5) {
-      return depth;
-    }
+    if (depth > 5) return depth;
+
     const index = messages.findLastIndex(
       (i: Message) => i.parentTaskId && i.taskId === message.taskId
     );
+
     if (index > -1) {
       const { parentTaskId } = messages[index] as Message;
       if (parentTaskId) {
@@ -122,6 +131,12 @@ const ChatWindow = ({
     updateAgentMode(value ? PAUSE_MODE : AUTOMATIC_MODE);
   };
 
+  const handleProviderChange = (provider: LLMProvider) => {
+    if (onProviderChange) {
+      onProviderChange(provider);
+    }
+  };
+
   return (
     <div
       className={
@@ -129,7 +144,26 @@ const ChatWindow = ({
         (className ?? "")
       }
     >
-      <MacWindowHeader title={title} messages={messages} onSave={onSave} />
+      <MacWindowHeader
+        title={title}
+        messages={messages}
+        onSave={onSave}
+        llmProvider={llmProvider}
+        sessionToken={sessionToken}
+        onTokensExhausted={onTokensExhausted}
+      />
+
+      {/* Token Balance Display */}
+      {sessionToken && (
+        <div className="px-3 pb-2">
+          <TokenBalance
+            sessionToken={sessionToken}
+            onTokensExhausted={onTokensExhausted}
+            className="text-xs"
+          />
+        </div>
+      )}
+
       <div
         className={clsx(
           "mb-2 mr-2 ",
@@ -176,7 +210,15 @@ const ChatWindow = ({
               <ChatMessage
                 message={{
                   type: MESSAGE_TYPE_SYSTEM,
-                  value: `📢 ${t("provide-api-key-via-settings")}`,
+                  value: `🎯 ${t("demo-tokens-available")}`,
+                }}
+              />
+            </Expand>
+            <Expand delay={1.0} type="spring">
+              <ChatMessage
+                message={{
+                  type: MESSAGE_TYPE_SYSTEM,
+                  value: `🔧 ${t("select-provider-and-configure")}`,
                 }}
               />
             </Expand>
@@ -184,7 +226,7 @@ const ChatWindow = ({
         )}
       </div>
       {displaySettings && (
-        <div className="flex flex-col items-center justify-center md:flex-row">
+        <div className="flex flex-col items-center justify-center gap-2 p-2 md:flex-row">
           <SwitchContainer label={t("web-search")}>
             <Switch
               disabled={agent !== null}
@@ -192,6 +234,7 @@ const ChatWindow = ({
               onChange={handleChangeWebSearch}
             />
           </SwitchContainer>
+
           <SwitchContainer label={t("pause-mode")}>
             <Switch
               disabled={agent !== null}
@@ -199,6 +242,12 @@ const ChatWindow = ({
               onChange={handleUpdateAgentMode}
             />
           </SwitchContainer>
+
+          <ProviderSelector
+            currentProvider={llmProvider}
+            onProviderChange={handleProviderChange}
+            disabled={agent !== null}
+          />
         </div>
       )}
     </div>
@@ -220,10 +269,43 @@ const SwitchContainer = ({
   );
 };
 
+const ProviderSelector = ({
+  currentProvider,
+  onProviderChange,
+  disabled,
+}: {
+  currentProvider: LLMProvider;
+  onProviderChange: (provider: LLMProvider) => void;
+  disabled: boolean;
+}) => {
+  const { t } = useTranslation("chat");
+
+  return (
+    <div className="m-1 flex w-40 items-center justify-center gap-2 rounded-lg border-[2px] border-white/20 bg-zinc-700 px-2 py-1">
+      <FaCog className="text-sm" />
+      <select
+        value={currentProvider}
+        onChange={(e) => onProviderChange(e.target.value as LLMProvider)}
+        disabled={disabled}
+        className="bg-transparent text-sm font-mono outline-none"
+      >
+        {Object.entries(LLM_PROVIDERS).map(([key, value]) => (
+          <option key={value} value={value} className="bg-zinc-700">
+            {PROVIDER_NAMES[value]}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+};
+
 interface HeaderProps {
   title?: string | ReactNode;
   messages: Message[];
   onSave?: (format: string) => void;
+  llmProvider?: LLMProvider;
+  sessionToken?: string;
+  onTokensExhausted?: () => void;
 }
 
 const MacWindowHeader = (props: HeaderProps) => {
@@ -231,11 +313,11 @@ const MacWindowHeader = (props: HeaderProps) => {
   const isAgentPaused = useAgentStore.use.isAgentPaused();
   const agent = useAgentStore.use.agent();
   const agentMode = useAgentStore.use.agentMode();
+  const isWebSearchEnabled = useAgentStore.use.isWebSearchEnabled();
+
   const saveElementAsImage = (elementId: string) => {
     const element = document.getElementById(elementId);
-    if (!element) {
-      return;
-    }
+    if (!element) return;
 
     htmlToImage
       .toJpeg(element, {
@@ -257,9 +339,7 @@ const MacWindowHeader = (props: HeaderProps) => {
 
   const copyElementText = (elementId: string) => {
     const element = document.getElementById(elementId);
-    if (!element) {
-      return;
-    }
+    if (!element) return;
 
     const text = element.innerText;
     if (navigator.clipboard) {
@@ -295,6 +375,9 @@ const MacWindowHeader = (props: HeaderProps) => {
     <PDFButton key="PDF" name="PDF" messages={props.messages} />,
   ];
 
+  const currentProvider = props.llmProvider || LLM_PROVIDERS.GROQ;
+  const providerName = PROVIDER_NAMES[currentProvider];
+
   return (
     <div className="flex items-center gap-1 overflow-visible rounded-t-3xl p-3">
       <PopIn delay={0.4}>
@@ -310,7 +393,18 @@ const MacWindowHeader = (props: HeaderProps) => {
         delay={1}
         className="invisible flex flex-grow font-mono text-sm font-bold text-gray-500 sm:ml-2 md:visible"
       >
-        {props.title}
+        <div className="flex items-center gap-2">
+          {props.title}
+          <span className="text-xs text-blue-400">
+            [{providerName}]
+          </span>
+          {isWebSearchEnabled && (
+            <span className="text-xs text-green-400 flex items-center gap-1">
+              <FaSearch size={10} />
+              Web
+            </span>
+          )}
+        </div>
       </Expand>
 
       <AnimatePresence>
@@ -362,6 +456,7 @@ const MacWindowHeader = (props: HeaderProps) => {
     </div>
   );
 };
+
 const ChatMessage = ({
   message,
   depth = 0,
@@ -371,6 +466,7 @@ const ChatMessage = ({
 }) => {
   const { t } = useTranslation(["chat", "common"]);
   const [copied, setCopied] = useState(false);
+
   useEffect(() => {
     let timeoutId: NodeJS.Timeout;
     if (copied) {
@@ -382,6 +478,7 @@ const ChatMessage = ({
       clearTimeout(timeoutId);
     };
   }, [copied]);
+
   return (
     <div
       className={`${getMessageContainerStyle(
@@ -390,7 +487,6 @@ const ChatMessage = ({
       style={{ marginLeft: `${depth * 40 + 20}px` }}
     >
       {message.type != MESSAGE_TYPE_SYSTEM && (
-        // Avoid for system messages as they do not have an icon and will cause a weird space
         <>
           <div className="mr-2 inline-block h-[0.9em]">
             {getTaskStatusIcon(message, {})}
@@ -414,12 +510,9 @@ const ChatMessage = ({
         <>
           <span>{message.value}</span>
           <br />
-          {
-            // Link to the FAQ if it is a shutdown message
-            message.type == MESSAGE_TYPE_SYSTEM &&
-              (message.value.toLowerCase().includes("shut") ||
-                message.value.toLowerCase().includes("error")) && <FAQ />
-          }
+          {message.type == MESSAGE_TYPE_SYSTEM &&
+            (message.value.toLowerCase().includes("shut") ||
+              message.value.toLowerCase().includes("error")) && <FAQ />}
         </>
       )}
     </div>
