@@ -7,13 +7,14 @@ import ChatWindow from "../components/ChatWindow";
 import Drawer from "../components/Drawer";
 import Input from "../components/Input";
 import Button from "../components/Button";
-import { FaRobot, FaStar, FaPlay } from "react-icons/fa";
+import { FaRobot, FaStar, FaPlay, FaCoins, FaInfoCircle } from "react-icons/fa";
 import { VscLoading } from "react-icons/vsc";
 import AutonomousAgent from "../components/AutonomousAgent";
 import Expand from "../components/motions/expand";
 import HelpDialog from "../components/HelpDialog";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { TaskWindow } from "../components/TaskWindow";
+import { TokenDepletionDialog } from "../components/TokenDepletionDialog";
 import { useAuth } from "../hooks/useAuth";
 import type { AgentPlaybackControl, Message } from "../types/agentTypes";
 import { useAgent } from "../hooks/useAgent";
@@ -34,14 +35,16 @@ import { useTranslation } from "next-i18next";
 import { useRouter } from "next/router";
 import { useGuestMode } from "../hooks/useGuestMode";
 import { authEnabled } from "../utils/env-helper";
-import { LLM_PROVIDERS, PROVIDER_NAMES } from "../utils/constants";
+import { LLM_PROVIDERS, PROVIDER_NAMES, DEMO_TOKEN_LIMIT, DEFAULT_MODELS } from "../utils/constants";
 import type { LLMProvider } from "../utils/types";
+import TokenBalance from "../components/TokenBalance";
 import {
   saveQueryResponse,
   createSession,
   initializeDatabase,
   getSessionToken,
-  getCookieId
+  getCookieId,
+  getTokenStatus
 } from "../utils/database";
 
 const Home: NextPage = () => {
@@ -66,11 +69,14 @@ const Home: NextPage = () => {
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
   const [showSorryDialog, setShowSorryDialog] = React.useState(false);
   const [showSignInDialog, setShowSignInDialog] = React.useState(false);
+  const [showTokenDepletionDialog, setShowTokenDepletionDialog] = React.useState(false);
   const [hasSaved, setHasSaved] = useState(false);
   const [showWeChatPayDialog, setShowWeChatPayDialog] = useState(false);
   const [showQQDialog, setShowQQDialog] = useState(false);
   const [customLanguage, setCustomLanguage] = useState<string>(i18n.language);
   const [sessionToken, setSessionToken] = useState<string>("");
+  const [tokenStatus, setTokenStatus] = useState<any>(null);
+  const [isFirstVisit, setIsFirstVisit] = useState(false);
 
   const settingsModel = useSettings();
   const { isValidGuest, isGuestMode } = useGuestMode(
@@ -91,6 +97,10 @@ const Home: NextPage = () => {
 
         setSessionToken(token);
         await createSession(token, cookieId);
+
+        // Get initial token status
+        const status = await getTokenStatus(token);
+        setTokenStatus(status);
       } catch (error) {
         console.error('Failed to initialize session:', error);
       }
@@ -99,12 +109,15 @@ const Home: NextPage = () => {
     initializeSession();
   }, []);
 
+  // Check if first visit and show enhanced help
   useEffect(() => {
     const key = "agentgpt-modal-opened-new";
     const savedModalData = localStorage.getItem(key);
+    const hasVisited = localStorage.getItem("autogpt-has-visited");
 
     setTimeout(() => {
-      if (savedModalData == null) {
+      if (savedModalData == null || !hasVisited) {
+        setIsFirstVisit(true);
         setShowHelpDialog(true);
       }
     }, 1800);
@@ -150,8 +163,29 @@ const Home: NextPage = () => {
     }
   };
 
-  const disableDeployAgent =
-    agent != null || isEmptyOrBlank(name) || isEmptyOrBlank(goalInput) || !settingsModel.isConfigurationValid();
+  const handleTokensExhausted = () => {
+    setShowTokenDepletionDialog(true);
+    agent?.stopAgent();
+  };
+
+  // Fixed deploy agent logic with better token handling
+  const disableDeployAgent = React.useMemo(() => {
+    // Basic validation
+    if (agent != null || isEmptyOrBlank(name) || isEmptyOrBlank(goalInput)) {
+      return true;
+    }
+
+    // If we don't have token status yet, allow deployment (optimistic)
+    if (!tokenStatus) {
+      return false;
+    }
+
+    // Check if user has demo tokens available
+    const hasTokens = tokenStatus.tokensRemaining > 0;
+
+    // If we have tokens OR valid configuration, allow deployment
+    return !hasTokens && !settingsModel.isConfigurationValid();
+  }, [agent, name, goalInput, tokenStatus, settingsModel]);
 
   const handleNewGoal = () => {
     if (
@@ -163,7 +197,14 @@ const Home: NextPage = () => {
       return;
     }
 
-    if (!settingsModel.isConfigurationValid()) {
+    // Check token availability first
+    if (tokenStatus && !tokenStatus.canUseTokens) {
+      setShowTokenDepletionDialog(true);
+      return;
+    }
+
+    // If no tokens and no valid config, show settings
+    if (!tokenStatus?.canUseTokens && !settingsModel.isConfigurationValid()) {
       setShowSettingsDialog(true);
       return;
     }
@@ -228,6 +269,18 @@ const Home: NextPage = () => {
     settingsModel.updateProvider(provider);
   };
 
+  const handleModelChange = (model: string) => {
+    settingsModel.saveSettings({
+      ...settingsModel.settings,
+      customModelName: model,
+    });
+  };
+
+  const getCurrentModel = () => {
+    const provider = settingsModel.settings.llmProvider || LLM_PROVIDERS.GROQ;
+    return settingsModel.settings.customModelName || DEFAULT_MODELS[provider];
+  };
+
   const proTitle = (
     <>
       AutoGPT Next Web<span className="ml-1 text-amber-500/90">Pro</span>
@@ -270,6 +323,7 @@ const Home: NextPage = () => {
       <HelpDialog
         show={showHelpDialog}
         close={() => setShowHelpDialog(false)}
+        sessionToken={sessionToken}
       />
       <SettingsDialog
         customSettings={settingsModel}
@@ -284,11 +338,17 @@ const Home: NextPage = () => {
         show={showSignInDialog}
         close={() => setShowSignInDialog(false)}
       />
+      <TokenDepletionDialog
+        show={showTokenDepletionDialog}
+        close={() => setShowTokenDepletionDialog(false)}
+        resetTime={tokenStatus?.resetAt}
+      />
       <WeChatPayDialog
         show={showWeChatPayDialog}
         close={() => setShowWeChatPayDialog(false)}
       />
       <QQDialog show={showQQDialog} close={() => setShowQQDialog(false)} />
+
       <main className="flex min-h-screen flex-row">
         <Drawer
           showHelp={() => setShowHelpDialog(true)}
@@ -323,14 +383,35 @@ const Home: NextPage = () => {
               </div>
               <div className="mt-1 text-center font-mono text-[0.7em] font-bold text-white">
                 <p>{t("sub-title")}</p>
-                <p className="text-xs text-blue-400 mt-1">
-                  {t("powered-by")} {PROVIDER_NAMES[currentProvider]}
-                  {!hasValidConfig && (
-                    <span className="text-red-400 ml-2">
-                      ({t("configuration-required")})
-                    </span>
+                <div className="flex items-center justify-center gap-3 mt-1">
+                  <p className="text-xs text-blue-400">
+                    {t("powered-by")} {PROVIDER_NAMES[currentProvider]}
+                    {!hasValidConfig && !tokenStatus?.canUseTokens && (
+                      <span className="text-red-400 ml-2">
+                        ({t("configuration-required")})
+                      </span>
+                    )}
+                    {tokenStatus?.canUseTokens && (
+                      <span className="text-green-400 ml-2">
+                        (Demo Mode)
+                      </span>
+                    )}
+                  </p>
+
+                  {/* Inline Token Counter */}
+                  {sessionToken && (
+                    <div className="flex items-center gap-2 bg-yellow-900/30 px-3 py-1 rounded-full border border-yellow-500/50">
+                      <FaCoins className="text-yellow-400 text-sm" />
+                      <TokenBalance
+                        sessionToken={sessionToken}
+                        onTokensExhausted={handleTokensExhausted}
+                        compact={true}
+                        showDetails={false}
+                        className="text-xs"
+                      />
+                    </div>
                   )}
-                </p>
+                </div>
               </div>
             </div>
 
@@ -356,6 +437,10 @@ const Home: NextPage = () => {
                 openSorryDialog={() => setShowSorryDialog(true)}
                 llmProvider={currentProvider}
                 onProviderChange={handleProviderChange}
+                onModelChange={handleModelChange}
+                currentModel={getCurrentModel()}
+                sessionToken={sessionToken}
+                onTokensExhausted={handleTokensExhausted}
               />
               {(agent || tasks.length > 0) && <TaskWindow />}
             </Expand>

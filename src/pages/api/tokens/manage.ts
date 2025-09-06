@@ -20,32 +20,36 @@ async function initializePostgreSQL() {
         pgClient = new Client({ connectionString });
         await pgClient.connect();
 
-        // Create token tracking table
-        await pgClient.query(`
-      CREATE TABLE IF NOT EXISTS demo_tokens (
-        id SERIAL PRIMARY KEY,
-        session_token TEXT NOT NULL,
-        cookie_id TEXT,
-        tokens_used INTEGER DEFAULT 0,
-        tokens_remaining INTEGER DEFAULT ${DEMO_TOKEN_LIMIT},
-        first_access TIMESTAMP DEFAULT NOW(),
-        last_activity TIMESTAMP DEFAULT NOW(),
-        reset_at TIMESTAMP DEFAULT (NOW() + INTERVAL '${TOKEN_RESET_HOURS} hours'),
-        user_agent TEXT,
-        ip_address TEXT,
-        metadata JSONB,
-        created_at TIMESTAMP DEFAULT NOW(),
-        UNIQUE(session_token)
-      )
-    `);
+        // Create token tracking table with proper string interpolation
+        const createTableQuery = `
+            CREATE TABLE IF NOT EXISTS demo_tokens (
+                id SERIAL PRIMARY KEY,
+                session_token TEXT NOT NULL,
+                cookie_id TEXT,
+                tokens_used INTEGER DEFAULT 0,
+                tokens_remaining INTEGER DEFAULT ${DEMO_TOKEN_LIMIT},
+                first_access TIMESTAMP DEFAULT NOW(),
+                last_activity TIMESTAMP DEFAULT NOW(),
+                reset_at TIMESTAMP DEFAULT (NOW() + INTERVAL '${TOKEN_RESET_HOURS} hours'),
+                user_agent TEXT,
+                ip_address TEXT,
+                metadata JSONB,
+                created_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(session_token)
+            )
+        `;
+
+        await pgClient.query(createTableQuery);
 
         await pgClient.query(`CREATE INDEX IF NOT EXISTS idx_demo_tokens_session ON demo_tokens(session_token)`);
         await pgClient.query(`CREATE INDEX IF NOT EXISTS idx_demo_tokens_cookie ON demo_tokens(cookie_id)`);
         await pgClient.query(`CREATE INDEX IF NOT EXISTS idx_demo_tokens_reset ON demo_tokens(reset_at)`);
 
+        console.log("PostgreSQL token management tables initialized successfully");
         return pgClient;
     } catch (error) {
         console.error("PostgreSQL token management initialization failed:", error);
+        pgClient = null;
         return null;
     }
 }
@@ -109,15 +113,15 @@ async function handleInitializeTokens(req: NextApiRequest, res: NextApiResponse,
                 const newResetAt = new Date(now.getTime() + TOKEN_RESET_HOURS * 60 * 60 * 1000);
 
                 await client.query(`
-          UPDATE demo_tokens 
-          SET tokens_used = 0, 
-              tokens_remaining = $1, 
-              last_activity = NOW(), 
-              reset_at = $2,
-              session_token = $3,
-              cookie_id = $4
-          WHERE id = $5
-        `, [DEMO_TOKEN_LIMIT, newResetAt, sessionToken, cookieId, user.id]);
+                    UPDATE demo_tokens
+                    SET tokens_used = 0,
+                        tokens_remaining = $1,
+                        last_activity = NOW(),
+                        reset_at = $2,
+                        session_token = $3,
+                        cookie_id = $4
+                    WHERE id = $5
+                `, [DEMO_TOKEN_LIMIT, newResetAt, sessionToken, cookieId, user.id]);
 
                 return res.status(200).json({
                     tokensUsed: 0,
@@ -128,12 +132,12 @@ async function handleInitializeTokens(req: NextApiRequest, res: NextApiResponse,
             } else {
                 // Update activity
                 await client.query(`
-          UPDATE demo_tokens 
-          SET last_activity = NOW(), 
-              session_token = $1,
-              cookie_id = $2
-          WHERE id = $3
-        `, [sessionToken, cookieId, user.id]);
+                    UPDATE demo_tokens
+                    SET last_activity = NOW(),
+                        session_token = $1,
+                        cookie_id = $2
+                    WHERE id = $3
+                `, [sessionToken, cookieId, user.id]);
 
                 return res.status(200).json({
                     tokensUsed: user.tokens_used,
@@ -148,10 +152,10 @@ async function handleInitializeTokens(req: NextApiRequest, res: NextApiResponse,
         const resetAt = new Date(Date.now() + TOKEN_RESET_HOURS * 60 * 60 * 1000);
 
         const result = await client.query(`
-      INSERT INTO demo_tokens (session_token, cookie_id, user_agent, ip_address, metadata, reset_at)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING tokens_used, tokens_remaining, reset_at
-    `, [sessionToken, cookieId, userAgent, ipAddress, JSON.stringify(metadata), resetAt]);
+            INSERT INTO demo_tokens (session_token, cookie_id, user_agent, ip_address, metadata, reset_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING tokens_used, tokens_remaining, reset_at
+        `, [sessionToken, cookieId, userAgent, ipAddress, JSON.stringify(metadata), resetAt]);
 
         const newUser = result.rows[0];
 
@@ -201,13 +205,13 @@ async function handleGetTokenStatus(req: NextApiRequest, res: NextApiResponse, c
             const newResetAt = new Date(now.getTime() + TOKEN_RESET_HOURS * 60 * 60 * 1000);
 
             await client.query(`
-        UPDATE demo_tokens 
-        SET tokens_used = 0, 
-            tokens_remaining = $1, 
-            last_activity = NOW(), 
-            reset_at = $2
-        WHERE id = $3
-      `, [DEMO_TOKEN_LIMIT, newResetAt, user.id]);
+                UPDATE demo_tokens
+                SET tokens_used = 0,
+                    tokens_remaining = $1,
+                    last_activity = NOW(),
+                    reset_at = $2
+                WHERE id = $3
+            `, [DEMO_TOKEN_LIMIT, newResetAt, user.id]);
 
             return res.status(200).json({
                 tokensUsed: 0,
@@ -260,13 +264,13 @@ async function handleConsumeTokens(req: NextApiRequest, res: NextApiResponse, cl
             const newResetAt = new Date(now.getTime() + TOKEN_RESET_HOURS * 60 * 60 * 1000);
 
             await client.query(`
-        UPDATE demo_tokens 
-        SET tokens_used = 0, 
-            tokens_remaining = $1, 
-            last_activity = NOW(), 
-            reset_at = $2
-        WHERE id = $3
-      `, [DEMO_TOKEN_LIMIT, newResetAt, user.id]);
+                UPDATE demo_tokens
+                SET tokens_used = 0,
+                    tokens_remaining = $1,
+                    last_activity = NOW(),
+                    reset_at = $2
+                WHERE id = $3
+            `, [DEMO_TOKEN_LIMIT, newResetAt, user.id]);
 
             // Use updated values
             user.tokens_used = 0;
@@ -290,14 +294,14 @@ async function handleConsumeTokens(req: NextApiRequest, res: NextApiResponse, cl
         const newResetAt = new Date(now.getTime() + TOKEN_RESET_HOURS * 60 * 60 * 1000);
 
         await client.query(`
-      UPDATE demo_tokens 
-      SET tokens_used = $1, 
-          tokens_remaining = $2, 
-          last_activity = NOW(),
-          reset_at = $3,
-          metadata = jsonb_set(COALESCE(metadata, '{}'), '{last_consumption}', $4)
-      WHERE id = $5
-    `, [newUsed, newRemaining, newResetAt, JSON.stringify({
+            UPDATE demo_tokens
+            SET tokens_used = $1,
+                tokens_remaining = $2,
+                last_activity = NOW(),
+                reset_at = $3,
+                metadata = jsonb_set(COALESCE(metadata, '{}'), '{last_consumption}', $4)
+            WHERE id = $5
+        `, [newUsed, newRemaining, newResetAt, JSON.stringify({
             ...metadata,
             timestamp: now.toISOString(),
             tokensConsumed: tokensToConsume
@@ -328,13 +332,13 @@ async function handleResetTokens(req: NextApiRequest, res: NextApiResponse, clie
         const resetAt = new Date(now.getTime() + TOKEN_RESET_HOURS * 60 * 60 * 1000);
 
         await client.query(`
-      UPDATE demo_tokens 
-      SET tokens_used = 0, 
-          tokens_remaining = $1, 
-          last_activity = NOW(), 
-          reset_at = $2
-      WHERE session_token = $3
-    `, [DEMO_TOKEN_LIMIT, resetAt, sessionToken]);
+            UPDATE demo_tokens
+            SET tokens_used = 0,
+                tokens_remaining = $1,
+                last_activity = NOW(),
+                reset_at = $2
+            WHERE session_token = $3
+        `, [DEMO_TOKEN_LIMIT, resetAt, sessionToken]);
 
         return res.status(200).json({
             tokensUsed: 0,

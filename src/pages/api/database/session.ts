@@ -19,35 +19,40 @@ async function initializePostgreSQL() {
         pgClient = new Client({ connectionString });
         await pgClient.connect();
 
-        // Create backup tables
-        await pgClient.query(`
-      CREATE TABLE IF NOT EXISTS backup_session_data (
-        session_token TEXT PRIMARY KEY,
-        cookie_id TEXT UNIQUE,
-        created_at TIMESTAMP NOT NULL,
-        last_accessed TIMESTAMP NOT NULL,
-        metadata JSONB
-      )
-    `);
+        // Create backup tables with proper error handling
+        const createSessionTableQuery = `
+            CREATE TABLE IF NOT EXISTS backup_session_data (
+                session_token TEXT PRIMARY KEY,
+                cookie_id TEXT UNIQUE,
+                created_at TIMESTAMP NOT NULL,
+                last_accessed TIMESTAMP NOT NULL,
+                metadata JSONB
+            )
+        `;
 
-        await pgClient.query(`
-      CREATE TABLE IF NOT EXISTS backup_query_responses (
-        id SERIAL PRIMARY KEY,
-        session_token TEXT NOT NULL,
-        query TEXT NOT NULL,
-        response TEXT NOT NULL,
-        created_at TIMESTAMP NOT NULL,
-        metadata JSONB,
-        FOREIGN KEY (session_token) REFERENCES backup_session_data(session_token) ON DELETE CASCADE
-      )
-    `);
+        const createQueryTableQuery = `
+            CREATE TABLE IF NOT EXISTS backup_query_responses (
+                id SERIAL PRIMARY KEY,
+                session_token TEXT NOT NULL,
+                query TEXT NOT NULL,
+                response TEXT NOT NULL,
+                created_at TIMESTAMP NOT NULL,
+                metadata JSONB,
+                FOREIGN KEY (session_token) REFERENCES backup_session_data(session_token) ON DELETE CASCADE
+            )
+        `;
+
+        await pgClient.query(createSessionTableQuery);
+        await pgClient.query(createQueryTableQuery);
 
         await pgClient.query(`CREATE INDEX IF NOT EXISTS idx_backup_session_token ON backup_query_responses(session_token)`);
         await pgClient.query(`CREATE INDEX IF NOT EXISTS idx_backup_created_at ON backup_query_responses(created_at)`);
 
+        console.log("PostgreSQL session backup tables initialized successfully");
         return pgClient;
     } catch (error) {
-        console.error("PostgreSQL initialization failed:", error);
+        console.error("PostgreSQL session initialization failed:", error);
+        pgClient = null;
         return null;
     }
 }
@@ -101,11 +106,11 @@ async function handleCreateSession(req: NextApiRequest, res: NextApiResponse, cl
         };
 
         await client.query(`
-      INSERT INTO backup_session_data (session_token, cookie_id, created_at, last_accessed, metadata)
-      VALUES ($1, $2, $3, $4, $5)
-      ON CONFLICT (session_token)
-      DO UPDATE SET cookie_id = $2, last_accessed = $4, metadata = $5
-    `, [sessionToken, cookieId || null, timestamp, timestamp, JSON.stringify(sessionMetadata)]);
+            INSERT INTO backup_session_data (session_token, cookie_id, created_at, last_accessed, metadata)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (session_token)
+            DO UPDATE SET cookie_id = $2, last_accessed = $4, metadata = $5
+        `, [sessionToken, cookieId || null, timestamp, timestamp, JSON.stringify(sessionMetadata)]);
 
         return res.status(200).json({ success: true, sessionToken, cookieId });
     } catch (error) {
@@ -188,14 +193,14 @@ async function handleUpdateSession(req: NextApiRequest, res: NextApiResponse, cl
 
         // Insert query response
         await client.query(`
-      INSERT INTO backup_query_responses (session_token, query, response, created_at, metadata)
-      VALUES ($1, $2, $3, $4, $5)
-    `, [sessionToken, query, response, timestamp, JSON.stringify(enhancedMetadata)]);
+            INSERT INTO backup_query_responses (session_token, query, response, created_at, metadata)
+            VALUES ($1, $2, $3, $4, $5)
+        `, [sessionToken, query, response, timestamp, JSON.stringify(enhancedMetadata)]);
 
         // Update session last accessed
         await client.query(`
-      UPDATE backup_session_data SET last_accessed = $1 WHERE session_token = $2
-    `, [timestamp, sessionToken]);
+            UPDATE backup_session_data SET last_accessed = $1 WHERE session_token = $2
+        `, [timestamp, sessionToken]);
 
         return res.status(200).json({ success: true });
     } catch (error) {

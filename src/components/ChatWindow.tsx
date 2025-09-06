@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import React, { useEffect, useRef, useState } from "react";
-import { FaClipboard, FaImage, FaSave, FaPlay, FaPause, FaSearch, FaCog } from "react-icons/fa";
+import { FaClipboard, FaImage, FaSave, FaPlay, FaPause, FaSearch, FaCog, FaMicrochip } from "react-icons/fa";
 import PopIn from "./motions/popin";
 import Expand from "./motions/expand";
 import * as htmlToImage from "html-to-image";
@@ -33,7 +33,15 @@ import MarkdownRenderer from "./MarkdownRenderer";
 import { Switch } from "./Switch";
 import { env } from "../env/client.mjs";
 import { useTranslation, Trans } from "next-i18next";
-import { PROVIDER_NAMES, LLM_PROVIDERS } from "../utils/constants";
+import {
+  PROVIDER_NAMES,
+  LLM_PROVIDERS,
+  MODEL_DISPLAY_NAMES,
+  GROQ_MODELS,
+  OPENROUTER_MODELS,
+  COHERE_MODELS,
+  DEFAULT_MODELS
+} from "../utils/constants";
 import type { LLMProvider } from "../utils/types";
 import TokenBalance from "./TokenBalance";
 
@@ -46,6 +54,8 @@ interface ChatWindowProps extends HeaderProps {
   openSorryDialog?: () => void;
   llmProvider?: LLMProvider;
   onProviderChange?: (provider: LLMProvider) => void;
+  onModelChange?: (model: string) => void;
+  currentModel?: string;
   sessionToken?: string;
   onTokensExhausted?: () => void;
 }
@@ -64,6 +74,8 @@ const ChatWindow = ({
   openSorryDialog,
   llmProvider = LLM_PROVIDERS.GROQ,
   onProviderChange,
+  onModelChange,
+  currentModel,
   sessionToken,
   onTokensExhausted,
 }: ChatWindowProps) => {
@@ -135,6 +147,29 @@ const ChatWindow = ({
     if (onProviderChange) {
       onProviderChange(provider);
     }
+  };
+
+  const handleModelChange = (model: string) => {
+    if (onModelChange) {
+      onModelChange(model);
+    }
+  };
+
+  const getAvailableModels = (provider: LLMProvider) => {
+    switch (provider) {
+      case LLM_PROVIDERS.GROQ:
+        return GROQ_MODELS;
+      case LLM_PROVIDERS.OPENROUTER:
+        return OPENROUTER_MODELS;
+      case LLM_PROVIDERS.COHERE:
+        return COHERE_MODELS;
+      default:
+        return GROQ_MODELS;
+    }
+  };
+
+  const getCurrentModelName = () => {
+    return currentModel || DEFAULT_MODELS[llmProvider];
   };
 
   return (
@@ -227,6 +262,13 @@ const ChatWindow = ({
       </div>
       {displaySettings && (
         <div className="flex flex-col items-center justify-center gap-2 p-2 md:flex-row">
+          <ModelSelector
+            currentProvider={llmProvider}
+            currentModel={getCurrentModelName()}
+            onModelChange={handleModelChange}
+            disabled={agent !== null}
+          />
+
           <SwitchContainer label={t("web-search")}>
             <Switch
               disabled={agent !== null}
@@ -265,6 +307,55 @@ const SwitchContainer = ({
     <div className="m-1 flex w-36 items-center justify-center gap-2 rounded-lg border-[2px] border-white/20 bg-zinc-700 px-2 py-1">
       <p className="font-mono text-sm">{label}</p>
       {children}
+    </div>
+  );
+};
+
+const ModelSelector = ({
+  currentProvider,
+  currentModel,
+  onModelChange,
+  disabled,
+}: {
+  currentProvider: LLMProvider;
+  currentModel: string;
+  onModelChange: (model: string) => void;
+  disabled: boolean;
+}) => {
+  const { t } = useTranslation("chat");
+
+  const getAvailableModels = (provider: LLMProvider) => {
+    switch (provider) {
+      case LLM_PROVIDERS.GROQ:
+        return GROQ_MODELS;
+      case LLM_PROVIDERS.OPENROUTER:
+        return OPENROUTER_MODELS;
+      case LLM_PROVIDERS.COHERE:
+        return COHERE_MODELS;
+      default:
+        return GROQ_MODELS;
+    }
+  };
+
+  const availableModels = getAvailableModels(currentProvider);
+  const currentModelDisplay = MODEL_DISPLAY_NAMES[currentModel as keyof typeof MODEL_DISPLAY_NAMES] || currentModel;
+
+  return (
+    <div className="m-1 flex w-48 items-center justify-center gap-2 rounded-lg border-[2px] border-white/20 bg-zinc-700 px-2 py-1">
+      <FaMicrochip className="text-sm" />
+      <select
+        value={currentModel}
+        onChange={(e) => onModelChange(e.target.value)}
+        disabled={disabled}
+        className="bg-transparent text-sm font-mono outline-none w-full"
+        title={currentModelDisplay}
+      >
+        {availableModels.map((model) => (
+          <option key={model} value={model} className="bg-zinc-700">
+            {MODEL_DISPLAY_NAMES[model as keyof typeof MODEL_DISPLAY_NAMES] || model}
+          </option>
+        ))}
+      </select>
     </div>
   );
 };
