@@ -109,6 +109,24 @@ const Home: NextPage = () => {
     initializeSession();
   }, []);
 
+  // Refresh token status periodically
+  useEffect(() => {
+    if (!sessionToken) return;
+
+    const refreshTokenStatus = async () => {
+      try {
+        const status = await getTokenStatus(sessionToken);
+        setTokenStatus(status);
+      } catch (error) {
+        console.error('Failed to refresh token status:', error);
+      }
+    };
+
+    // Refresh every 10 seconds
+    const interval = setInterval(refreshTokenStatus, 10000);
+    return () => clearInterval(interval);
+  }, [sessionToken]);
+
   // Check if first visit and show enhanced help
   useEffect(() => {
     const key = "agentgpt-modal-opened-new";
@@ -163,10 +181,10 @@ const Home: NextPage = () => {
     }
   };
 
-  const handleTokensExhausted = () => {
+  const handleTokensExhausted = useCallback(() => {
     setShowTokenDepletionDialog(true);
     agent?.stopAgent();
-  };
+  }, [agent]);
 
   // Fixed deploy agent logic with better token handling
   const disableDeployAgent = React.useMemo(() => {
@@ -265,20 +283,30 @@ const Home: NextPage = () => {
     setCustomLanguage(lng);
   };
 
+  // Fixed provider change handler
   const handleProviderChange = (provider: LLMProvider) => {
+    console.log("Changing provider to:", provider);
     settingsModel.updateProvider(provider);
   };
 
+  // Fixed model change handler
   const handleModelChange = (model: string) => {
-    settingsModel.saveSettings({
-      ...settingsModel.settings,
-      customModelName: model,
-    });
+    console.log("Changing model to:", model);
+    settingsModel.updateModel(model);
   };
 
+  // Fixed current model getter
   const getCurrentModel = () => {
+    const currentModel = settingsModel.settings.customModelName;
     const provider = settingsModel.settings.llmProvider || LLM_PROVIDERS.GROQ;
-    return settingsModel.settings.customModelName || DEFAULT_MODELS[provider];
+
+    // If no model is set or it's empty, return the default for the provider
+    if (!currentModel || currentModel.trim() === "") {
+      return DEFAULT_MODELS[provider];
+    }
+
+    console.log("Current model:", currentModel, "for provider:", provider);
+    return currentModel;
   };
 
   const proTitle = (

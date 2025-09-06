@@ -711,13 +711,14 @@ class AutonomousAgent {
 
     if (axios.isAxiosError(e)) {
       const axiosError = e;
-      if (axiosError.response?.status === 429) {
+      const status = axiosError.response?.status;
+      if (status === 429) {
         message = `${i18n?.t("errors.rate-limit", { ns: "chat" })}`;
-      } else if (axiosError.response?.status === 404) {
+      } else if (status === 404) {
         message = `${i18n?.t("errors.accessing-gtp4", { ns: "chat" })}`;
-      } else if (axiosError.response?.status === 401) {
+      } else if (status === 401) {
         message = "API authentication failed. Please check your API keys in settings.";
-      } else if (axiosError.response?.status >= 500) {
+      } else if (status !== undefined && status >= 500) {
         message = "Server error occurred. Please try again in a moment.";
       }
     } else if (e instanceof Error) {

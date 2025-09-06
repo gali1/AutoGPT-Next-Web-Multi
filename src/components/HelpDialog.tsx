@@ -165,10 +165,10 @@ export default function HelpDialog({
 
   return (
     <Dialog
-      header={
+header={
         <div className="flex items-center justify-between w-full">
           <span className="flex items-center gap-2">
-            {steps[currentStep].title}
+            {steps[currentStep]?.title || "Help"}
           </span>
           {isFirstTime && (
             <div className="flex items-center gap-2 bg-yellow-900/30 px-3 py-1 rounded-full border border-yellow-500/50">
@@ -202,7 +202,7 @@ export default function HelpDialog({
       }
     >
       <div className="min-h-[400px]">
-        {steps[currentStep].content}
+        {steps[currentStep]?.content ?? null}
 
         {isFirstTime && (
           <div className="mt-6 flex justify-center">

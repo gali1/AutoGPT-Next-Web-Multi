@@ -58,9 +58,27 @@ const loadSettings = (): ModelSettings => {
     defaultSettings.llmProvider = LLM_PROVIDERS.GROQ;
   }
 
-  // Set default model for provider if not set
-  if (!defaultSettings.customModelName) {
-    defaultSettings.customModelName = DEFAULT_MODELS[defaultSettings.llmProvider];
+  // Set default model for provider if not set OR if current model doesn't belong to the provider
+  const currentProvider = defaultSettings.llmProvider;
+  const currentModel = defaultSettings.customModelName;
+
+  // Check if current model belongs to current provider
+  const isValidModelForProvider = (() => {
+    switch (currentProvider) {
+      case LLM_PROVIDERS.GROQ:
+        return import("../utils/constants").then(c => c.GROQ_MODELS.includes(currentModel as any));
+      case LLM_PROVIDERS.OPENROUTER:
+        return import("../utils/constants").then(c => c.OPENROUTER_MODELS.includes(currentModel as any));
+      case LLM_PROVIDERS.COHERE:
+        return import("../utils/constants").then(c => c.COHERE_MODELS.includes(currentModel as any));
+      default:
+        return Promise.resolve(false);
+    }
+  });
+
+  // If no model or invalid model for provider, set default
+  if (!currentModel) {
+    defaultSettings.customModelName = DEFAULT_MODELS[currentProvider];
   }
 
   // Reset to defaults if no API key and not guest mode
@@ -102,7 +120,32 @@ export function useSettings() {
       processedSettings.llmProvider = LLM_PROVIDERS.GROQ;
     }
 
-    // Set default model for provider if not set
+    // Validate model belongs to provider - if not, set default
+    const provider = processedSettings.llmProvider;
+    const model = processedSettings.customModelName;
+
+    const getModelsForProvider = (p: LLMProvider) => {
+      switch (p) {
+        case LLM_PROVIDERS.GROQ:
+          return import("../utils/constants").then(c => c.GROQ_MODELS);
+        case LLM_PROVIDERS.OPENROUTER:
+          return import("../utils/constants").then(c => c.OPENROUTER_MODELS);
+        case LLM_PROVIDERS.COHERE:
+          return import("../utils/constants").then(c => c.COHERE_MODELS);
+        default:
+          return Promise.resolve([]);
+      }
+    };
+
+    // Check if model is valid for provider
+    getModelsForProvider(provider).then(models => {
+      if (!model || !models.includes(model as any)) {
+        processedSettings.customModelName = DEFAULT_MODELS[provider];
+        console.log(`Model ${model} invalid for provider ${provider}, setting to default: ${DEFAULT_MODELS[provider]}`);
+      }
+    });
+
+    // If no model specified, set default for provider
     if (!processedSettings.customModelName) {
       processedSettings.customModelName = DEFAULT_MODELS[processedSettings.llmProvider];
     }
@@ -125,6 +168,7 @@ export function useSettings() {
       processedSettings.webSearchProvider = "google";
     }
 
+    console.log("Saving settings:", processedSettings);
     setSettings(processedSettings);
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(processedSettings));
   };
@@ -138,8 +182,18 @@ export function useSettings() {
     const newSettings = {
       ...settings,
       llmProvider: provider,
-      customModelName: DEFAULT_MODELS[provider],
+      customModelName: DEFAULT_MODELS[provider], // Always update model when provider changes
     };
+    console.log(`Provider changed to ${provider}, setting model to ${DEFAULT_MODELS[provider]}`);
+    saveSettings(newSettings);
+  };
+
+  const updateModel = (model: string) => {
+    const newSettings = {
+      ...settings,
+      customModelName: model,
+    };
+    console.log(`Model changed to ${model}`);
     saveSettings(newSettings);
   };
 
@@ -167,6 +221,7 @@ export function useSettings() {
     saveSettings,
     resetSettings,
     updateProvider,
+    updateModel, // Add this new method
     getCurrentApiKey,
     isConfigurationValid,
     hasValidApiKey: () => hasValidApiKey(settings),

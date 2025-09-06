@@ -111,20 +111,18 @@ function setLocalCache(cache: SessionCache): void {
   }
 }
 
-// API call utilities with proper URL handling
+// API call utilities with proper URL handling - FIXED
 async function apiCall(endpoint: string, options: RequestInit = {}): Promise<any> {
+  // Construct URL outside try block so it's accessible in catch block
   let url: string;
+  if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
+    url = endpoint;
+  } else {
+    const baseUrl = getBaseUrl();
+    url = `${baseUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+  }
 
   try {
-    // If endpoint is already absolute, use as-is
-    if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
-      url = endpoint;
-    } else {
-      // Construct absolute URL
-      const baseUrl = getBaseUrl();
-      url = `${baseUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
-    }
-
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
@@ -139,7 +137,7 @@ async function apiCall(endpoint: string, options: RequestInit = {}): Promise<any
 
     return response.json();
   } catch (error) {
-    console.error(`API call to ${url || endpoint} failed:`, error);
+    console.error(`API call to ${url} failed:`, error);
     throw error;
   }
 }

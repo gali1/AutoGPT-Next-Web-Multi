@@ -37,13 +37,11 @@ import {
   PROVIDER_NAMES,
   LLM_PROVIDERS,
   MODEL_DISPLAY_NAMES,
-  GROQ_MODELS,
-  OPENROUTER_MODELS,
-  COHERE_MODELS,
   DEFAULT_MODELS
 } from "../utils/constants";
 import type { LLMProvider } from "../utils/types";
 import TokenBalance from "./TokenBalance";
+import { getModelsForProvider, getValidModelForProvider } from "../utils/modelValidation";
 
 interface ChatWindowProps extends HeaderProps {
   children?: ReactNode;
@@ -144,33 +142,23 @@ const ChatWindow = ({
   };
 
   const handleProviderChange = (provider: LLMProvider) => {
+    console.log("ChatWindow: Provider change requested:", provider);
     if (onProviderChange) {
       onProviderChange(provider);
     }
   };
 
   const handleModelChange = (model: string) => {
+    console.log("ChatWindow: Model change requested:", model);
     if (onModelChange) {
       onModelChange(model);
     }
   };
 
-  const getAvailableModels = (provider: LLMProvider) => {
-    switch (provider) {
-      case LLM_PROVIDERS.GROQ:
-        return GROQ_MODELS;
-      case LLM_PROVIDERS.OPENROUTER:
-        return OPENROUTER_MODELS;
-      case LLM_PROVIDERS.COHERE:
-        return COHERE_MODELS;
-      default:
-        return GROQ_MODELS;
-    }
-  };
-
-  // Fixed: Ensure current model reflects the actual selected model
+  // Use utility function for current model validation
   const getCurrentModelName = () => {
-    return currentModel || DEFAULT_MODELS[llmProvider];
+    const model = currentModel || DEFAULT_MODELS[llmProvider];
+    return getValidModelForProvider(model, llmProvider);
   };
 
   return (
@@ -312,7 +300,6 @@ const SwitchContainer = ({
   );
 };
 
-// Fixed ModelSelector component
 const ModelSelector = ({
   currentProvider,
   currentModel,
@@ -326,25 +313,12 @@ const ModelSelector = ({
 }) => {
   const { t } = useTranslation("chat");
 
-  const getAvailableModels = (provider: LLMProvider) => {
-    switch (provider) {
-      case LLM_PROVIDERS.GROQ:
-        return GROQ_MODELS;
-      case LLM_PROVIDERS.OPENROUTER:
-        return OPENROUTER_MODELS;
-      case LLM_PROVIDERS.COHERE:
-        return COHERE_MODELS;
-      default:
-        return GROQ_MODELS;
-    }
-  };
-
-  const availableModels = getAvailableModels(currentProvider);
+  const availableModels = getModelsForProvider(currentProvider);
   const currentModelDisplay = MODEL_DISPLAY_NAMES[currentModel as keyof typeof MODEL_DISPLAY_NAMES] || currentModel;
 
-  // Fixed: Use proper value and ensure it updates correctly
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const selectedModel = e.target.value;
+    console.log("ModelSelector: Model selected:", selectedModel);
     onModelChange(selectedModel);
   };
 
@@ -352,8 +326,8 @@ const ModelSelector = ({
     <div className="m-1 flex w-48 items-center justify-center gap-2 rounded-lg border-[2px] border-white/20 bg-zinc-700 px-2 py-1">
       <FaMicrochip className="text-sm" />
       <select
-        value={currentModel} // Fixed: Ensure this matches the current model
-        onChange={handleModelChange} // Fixed: Use proper event handler
+        value={currentModel}
+        onChange={handleModelChange}
         disabled={disabled}
         className="bg-transparent text-sm font-mono outline-none w-full text-white"
         title={currentModelDisplay}
@@ -379,12 +353,18 @@ const ProviderSelector = ({
 }) => {
   const { t } = useTranslation("chat");
 
+  const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const selectedProvider = e.target.value as LLMProvider;
+    console.log("ProviderSelector: Provider selected:", selectedProvider);
+    onProviderChange(selectedProvider);
+  };
+
   return (
     <div className="m-1 flex w-40 items-center justify-center gap-2 rounded-lg border-[2px] border-white/20 bg-zinc-700 px-2 py-1">
       <FaCog className="text-sm" />
       <select
         value={currentProvider}
-        onChange={(e) => onProviderChange(e.target.value as LLMProvider)}
+        onChange={handleProviderChange}
         disabled={disabled}
         className="bg-transparent text-sm font-mono outline-none text-white"
       >

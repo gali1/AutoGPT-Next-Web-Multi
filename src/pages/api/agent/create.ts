@@ -10,6 +10,46 @@ export const config = {
   runtime: "edge",
 };
 
+// Token estimation utility
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+// Token consumption utility
+async function consumeTokensForResponse(sessionToken: string, prompt: string, response: string, metadata: Record<string, any> = {}): Promise<void> {
+  if (!sessionToken) return;
+
+  try {
+    const estimatedTokens = estimateTokens(prompt + response);
+
+    const consumeResponse = await fetch('/api/tokens/manage', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionToken,
+        tokensToConsume: estimatedTokens,
+        metadata: {
+          ...metadata,
+          type: 'agent_create',
+          promptLength: prompt.length,
+          responseLength: response.length,
+          timestamp: new Date().toISOString(),
+        },
+      }),
+    });
+
+    if (!consumeResponse.ok) {
+      console.warn('Failed to consume tokens:', await consumeResponse.text());
+    } else {
+      console.log(`Consumed ${estimatedTokens} tokens for create tasks operation`);
+    }
+  } catch (error) {
+    console.warn('Failed to track token consumption:', error);
+  }
+}
+
 // SSE utilities
 const SSEUtils = {
   setupSSE: (response: Response) => {
@@ -121,10 +161,26 @@ const handler = async (request: NextRequest) => {
           lastTask,
           result,
           completedTasks,
-          customLanguage
+          customLanguage,
+          sessionToken
         );
 
         const processingTime = Date.now() - startTime;
+
+        // Consume tokens for this operation
+        if (sessionToken) {
+          const prompt = `Goal: ${goal}, Tasks: ${JSON.stringify(tasks)}, Last Task: ${lastTask}, Result: ${result}`;
+          const response = JSON.stringify(newTasks);
+          await consumeTokensForResponse(sessionToken, prompt, response, {
+            type: "task_creation",
+            llmProvider: modelSettings.llmProvider,
+            processingTime,
+            newTaskCount: newTasks.length,
+            completedTaskCount: completedTasks?.length || 0,
+            goal,
+            requestId
+          });
+        }
 
         // Save to database if session token provided
         if (sessionToken) {

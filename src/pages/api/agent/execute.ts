@@ -10,6 +10,46 @@ export const config = {
   runtime: "edge",
 };
 
+// Token estimation utility
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+// Token consumption utility
+async function consumeTokensForResponse(sessionToken: string, prompt: string, response: string, metadata: Record<string, any> = {}): Promise<void> {
+  if (!sessionToken) return;
+
+  try {
+    const estimatedTokens = estimateTokens(prompt + response);
+
+    const consumeResponse = await fetch('/api/tokens/manage', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionToken,
+        tokensToConsume: estimatedTokens,
+        metadata: {
+          ...metadata,
+          type: 'agent_execute',
+          promptLength: prompt.length,
+          responseLength: response.length,
+          timestamp: new Date().toISOString(),
+        },
+      }),
+    });
+
+    if (!consumeResponse.ok) {
+      console.warn('Failed to consume tokens:', await consumeResponse.text());
+    } else {
+      console.log(`Consumed ${estimatedTokens} tokens for execute task operation`);
+    }
+  } catch (error) {
+    console.warn('Failed to track token consumption:', error);
+  }
+}
+
 // SSE utilities
 const SSEUtils = {
   setupSSE: (response: Response) => {
@@ -111,7 +151,8 @@ const handler = async (request: NextRequest) => {
           goal,
           task,
           taskAnalysis,
-          customLanguage
+          customLanguage,
+          sessionToken
         );
 
         const processingTime = Date.now() - startTime;
@@ -129,6 +170,19 @@ const handler = async (request: NextRequest) => {
 
           // Small delay for better streaming effect
           await new Promise(resolve => setTimeout(resolve, 50));
+        }
+
+        // Consume tokens for this operation
+        if (sessionToken) {
+          const prompt = `Goal: ${goal}, Task: ${task}, Analysis: ${JSON.stringify(taskAnalysis)}`;
+          await consumeTokensForResponse(sessionToken, prompt, response, {
+            type: "task_execution",
+            llmProvider: modelSettings.llmProvider,
+            processingTime,
+            analysis: taskAnalysis,
+            goal,
+            requestId
+          });
         }
 
         // Save to database if session token provided

@@ -55,6 +55,10 @@ export const TokenDepletionDialog = ({ show, close, resetTime }: TokenDepletionD
     }
   ];
 
+  const handleProviderClick = (url: string) => {
+    window.open(url, '_blank');
+  };
+
   return (
     <Dialog
       header={
@@ -127,7 +131,7 @@ export const TokenDepletionDialog = ({ show, close, resetTime }: TokenDepletionD
                         <div className="text-sm text-gray-300">{provider.description}</div>
                       </div>
                       <Button
-                        onClick={() => window.open(provider.url, '_blank')}
+                        onClick={() => handleProviderClick(provider.url)}
                         className="text-sm px-4 py-2"
                         enabledClassName="bg-white/10 hover:bg-white/20 border-white/20"
                       >
