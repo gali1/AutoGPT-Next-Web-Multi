@@ -207,10 +207,33 @@ class AutonomousAgent {
       try {
         const additionalTaskValues = await this.getAdditionalTasks(currentTask.value, result);
 
-        // Ensure we have a valid array for iteration
-        const validTaskValues = Array.isArray(additionalTaskValues)
-          ? additionalTaskValues.filter(value => value && typeof value === 'string' && value.trim())
-          : [];
+        // Properly handle empty arrays - this is expected with web search
+        if (!Array.isArray(additionalTaskValues)) {
+          console.warn("Invalid task values returned, treating as empty array");
+          this.sendMessage({ ...currentTask, status: TASK_STATUS_FINAL });
+          await this.loop();
+          return;
+        }
+
+        // Handle empty array case - this is valid when web search provides complete results
+        if (additionalTaskValues.length === 0) {
+          console.log("No additional tasks created - goal may be complete or web search provided sufficient information");
+          this.sendMessage({ ...currentTask, status: TASK_STATUS_FINAL });
+          await this.loop();
+          return;
+        }
+
+        // Filter out invalid tasks
+        const validTaskValues = additionalTaskValues.filter(value =>
+          value && typeof value === 'string' && value.trim()
+        );
+
+        if (validTaskValues.length === 0) {
+          console.log("No valid additional tasks after filtering");
+          this.sendMessage({ ...currentTask, status: TASK_STATUS_FINAL });
+          await this.loop();
+          return;
+        }
 
         const newTasks: Task[] = validTaskValues.map((value) => ({
           taskId: v1().toString(),
@@ -228,9 +251,11 @@ class AutonomousAgent {
           }
         }
 
+        // Mark current task as final if no new tasks were added
         if (newTasks.length === 0) {
           this.sendMessage({ ...currentTask, status: TASK_STATUS_FINAL });
         }
+
       } catch (e) {
         console.log("Error creating additional tasks:", e);
         this.sendErrorMessage(
@@ -387,7 +412,7 @@ class AutonomousAgent {
       const taskValues = this.getRemainingTasks().map((task) => task.value).filter(Boolean);
 
       if (this.shouldRunClientSide()) {
-        return await AgentService.createTasksAgent(
+        const additionalTasks = await AgentService.createTasksAgent(
           this.modelSettings,
           this.goal,
           taskValues,
@@ -397,6 +422,9 @@ class AutonomousAgent {
           this.customLanguage,
           this.sessionToken
         );
+
+        // Ensure we always return an array (empty array is valid)
+        return Array.isArray(additionalTasks) ? additionalTasks : [];
       }
 
       const data = {
@@ -412,22 +440,30 @@ class AutonomousAgent {
 
       if (this.shouldUseStreaming()) {
         const result = await this.handleStreamingRequest("/api/agent/create", data);
+
+        // Handle different possible response structures
         if (result && Array.isArray(result.newTasks)) {
           return result.newTasks;
         }
         if (result && Array.isArray(result)) {
           return result;
         }
+
+        // Empty result is valid - means no more tasks needed
+        console.log("Streaming API returned no new tasks - goal may be complete");
         return [];
       }
 
       const res = await this.post(`/api/agent/create`, data);
       const tasks = res.data.newTasks || res.data || [];
 
+      // Ensure we always return an array
       return Array.isArray(tasks) ? tasks : [];
     } catch (error) {
       console.error("Failed to get additional tasks:", error);
-      return []; // Always return empty array on failure
+      // With web search enabled, returning empty array is often correct
+      // as web search may provide complete information
+      return [];
     }
   }
 
@@ -558,6 +594,7 @@ class AutonomousAgent {
             if (line.startsWith('data: ')) {
               const data = line.slice(6);
               if (data === '[DONE]') {
+                // Return result even if it's null or empty - this is valid
                 return result;
               }
 
@@ -583,6 +620,7 @@ class AutonomousAgent {
         reader.releaseLock();
       }
 
+      // Return result even if null/empty - this is valid for web search scenarios
       return result;
     } catch (error) {
       console.error('Streaming request failed:', error);

@@ -10,19 +10,31 @@ export const config = {
   runtime: "edge",
 };
 
+// Helper to construct absolute URLs for Edge Runtime
+function getAbsoluteUrl(path: string): string {
+  const baseUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : process.env.NEXT_PUBLIC_VERCEL_URL
+      ? process.env.NEXT_PUBLIC_VERCEL_URL
+      : 'http://localhost:3000';
+
+  return `${baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 // Token estimation utility
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-// Token consumption utility
+// Token consumption utility with proper URL construction
 async function consumeTokensForResponse(sessionToken: string, prompt: string, response: string, metadata: Record<string, any> = {}): Promise<void> {
   if (!sessionToken) return;
 
   try {
     const estimatedTokens = estimateTokens(prompt + response);
+    const tokenUrl = getAbsoluteUrl('/api/tokens/manage');
 
-    const consumeResponse = await fetch('/api/tokens/manage', {
+    const consumeResponse = await fetch(tokenUrl, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',

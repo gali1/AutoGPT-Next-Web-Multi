@@ -1,8 +1,8 @@
 import React from "react";
 import FadeIn from "./motions/FadeIn";
 import Expand from "./motions/expand";
+import type { Task } from "../types/agentTypes";
 import {
-  Task,
   MESSAGE_TYPE_TASK,
   TASK_STATUS_STARTED,
 } from "../types/agentTypes";
@@ -74,6 +74,7 @@ const Task = ({ task }: { task: Task }) => {
       deleteTask(task.taskId as string);
     }
   };
+
   return (
     <FadeIn>
       <div

@@ -38,85 +38,106 @@ interface SessionCache {
   lastSync: string;
 }
 
-// Helper to get the base URL for API calls - more robust version
-function getBaseUrl(): string {
-  // In browser environment, always use relative URLs to avoid CORS issues
-  if (typeof window !== 'undefined') {
-    return '';
-  }
-
-  // Server environment - construct absolute URL
-  if (process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}`;
-  }
-
-  if (process.env.NEXT_PUBLIC_VERCEL_URL) {
-    return process.env.NEXT_PUBLIC_VERCEL_URL;
-  }
-
-  return `http://localhost:${process.env.PORT ?? 3000}`;
-}
-
-// Robust URL construction that works in all environments
+// Fixed URL construction that works reliably in all environments
 function constructApiUrl(endpoint: string): string {
-  // Handle absolute URLs
+  // Handle already absolute URLs
   if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
     return endpoint;
   }
 
-  // Ensure endpoint starts with /
+  // Clean endpoint
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
-  // In browser, use relative URLs
+  // In browser environment, always use relative URLs to avoid CORS issues
   if (typeof window !== 'undefined') {
     return cleanEndpoint;
   }
 
-  // In server, use absolute URLs
-  const baseUrl = getBaseUrl();
-  return `${baseUrl}${cleanEndpoint}`;
+  // In server environment, try to construct absolute URL
+  try {
+    const baseUrl = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : process.env.NEXT_PUBLIC_VERCEL_URL
+      ? process.env.NEXT_PUBLIC_VERCEL_URL
+      : 'http://localhost:3000';
+
+    return `${baseUrl}${cleanEndpoint}`;
+  } catch (error) {
+    console.warn('Error constructing absolute URL, using relative:', error);
+    return cleanEndpoint;
+  }
 }
 
 // Session management
 export function getSessionToken(): string {
   if (typeof window === 'undefined') return '';
 
-  let sessionToken = sessionStorage.getItem(SESSION_STORAGE_KEY);
-  if (!sessionToken) {
-    sessionToken = uuidv4();
-    sessionStorage.setItem(SESSION_STORAGE_KEY, sessionToken);
+  try {
+    let sessionToken = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (!sessionToken) {
+      sessionToken = uuidv4();
+      sessionStorage.setItem(SESSION_STORAGE_KEY, sessionToken);
+    }
+    return sessionToken;
+  } catch (error) {
+    console.warn('Session storage not available:', error);
+    return uuidv4(); // Return a temporary token
   }
-  return sessionToken;
 }
 
 export function getCookieId(): string {
   if (typeof window === 'undefined') return '';
 
-  let cookieId = localStorage.getItem(COOKIE_STORAGE_KEY);
-  if (!cookieId) {
-    cookieId = uuidv4();
-    localStorage.setItem(COOKIE_STORAGE_KEY, cookieId);
+  try {
+    let cookieId = localStorage.getItem(COOKIE_STORAGE_KEY);
+    if (!cookieId) {
+      cookieId = uuidv4();
+      localStorage.setItem(COOKIE_STORAGE_KEY, cookieId);
+    }
+    return cookieId;
+  } catch (error) {
+    console.warn('Local storage not available:', error);
+    return uuidv4(); // Return a temporary ID
   }
-  return cookieId;
 }
 
 export function clearSession(): void {
   if (typeof window === 'undefined') return;
 
-  sessionStorage.removeItem(SESSION_STORAGE_KEY);
-  localStorage.removeItem(COOKIE_STORAGE_KEY);
-  localStorage.removeItem(LOCAL_CACHE_KEY);
+  try {
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
+    localStorage.removeItem(COOKIE_STORAGE_KEY);
+    localStorage.removeItem(LOCAL_CACHE_KEY);
+  } catch (error) {
+    console.warn('Error clearing session:', error);
+  }
 }
 
-// Local cache management
+// Local cache management with better error handling
 function getLocalCache(): SessionCache | null {
   if (typeof window === 'undefined') return null;
 
   try {
     const cached = localStorage.getItem(LOCAL_CACHE_KEY);
-    return cached ? JSON.parse(cached) : null;
+    if (!cached) return null;
+
+    const parsed = JSON.parse(cached);
+
+    // Validate cache structure
+    if (!parsed || !parsed.session || !Array.isArray(parsed.queryResponses)) {
+      console.warn('Invalid cache structure, clearing');
+      localStorage.removeItem(LOCAL_CACHE_KEY);
+      return null;
+    }
+
+    return parsed;
   } catch (error) {
-    console.error('Failed to parse local cache:', error);
+    console.warn('Failed to parse local cache, clearing:', error);
+    try {
+      localStorage.removeItem(LOCAL_CACHE_KEY);
+    } catch (clearError) {
+      console.warn('Failed to clear corrupted cache:', clearError);
+    }
     return null;
   }
 }
@@ -125,40 +146,85 @@ function setLocalCache(cache: SessionCache): void {
   if (typeof window === 'undefined') return;
 
   try {
+    // Validate cache before saving
+    if (!cache || !cache.session || !Array.isArray(cache.queryResponses)) {
+      console.warn('Invalid cache structure, not saving');
+      return;
+    }
+
     localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(cache));
   } catch (error) {
-    console.error('Failed to save local cache:', error);
+    console.warn('Failed to save local cache:', error);
+    // Try to clear space and retry once
+    try {
+      localStorage.removeItem(LOCAL_CACHE_KEY);
+      localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(cache));
+    } catch (retryError) {
+      console.error('Failed to save cache even after clearing:', retryError);
+    }
   }
 }
 
-// Enhanced API call utilities with better error handling
+// Enhanced API call utilities with better error handling and timeout
 async function apiCall(endpoint: string, options: RequestInit = {}): Promise<any> {
   const url = constructApiUrl(endpoint);
 
-  try {
-    console.log(`Making API call to: ${url}`);
+  // Add timeout to prevent hanging requests
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
+  try {
     const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
         ...options.headers,
       },
+      signal: controller.signal,
       ...options,
     });
 
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API call failed: ${response.status} ${response.statusText} - ${errorText}`);
+      let errorText = '';
+      try {
+        errorText = await response.text();
+      } catch (textError) {
+        errorText = 'Failed to read error response';
+      }
+
+      throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
     }
 
-    return response.json();
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      return response.json();
+    } else {
+      const text = await response.text();
+      try {
+        return JSON.parse(text);
+      } catch (parseError) {
+        console.warn('Response is not JSON, returning as text');
+        return { data: text };
+      }
+    }
   } catch (error) {
-    console.error(`API call to ${url} failed:`, error);
+    clearTimeout(timeoutId);
 
-    // For token-related API calls, fail silently to not break the main flow
-    if (url.includes('/api/tokens/')) {
-      console.warn('Token API call failed, continuing without token tracking');
-      return null;
+    // Handle different types of errors
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        console.warn(`API call to ${url} timed out`);
+        throw new Error('Request timed out');
+      }
+
+      console.warn(`API call to ${url} failed:`, error.message);
+
+      // For token-related API calls, fail more gracefully
+      if (url.includes('/api/tokens/')) {
+        console.warn('Token API call failed, returning null to continue operation');
+        return null;
+      }
     }
 
     throw error;
@@ -173,7 +239,7 @@ export async function initializeTokens(sessionToken?: string, cookieId?: string)
 
     if (!token) {
       console.warn('No session token available for token initialization');
-      return null;
+      return getDefaultTokenStatus();
     }
 
     const result = await apiCall('/api/tokens/manage', {
@@ -186,6 +252,7 @@ export async function initializeTokens(sessionToken?: string, cookieId?: string)
         metadata: {
           platform: typeof navigator !== 'undefined' ? navigator.platform : '',
           language: typeof navigator !== 'undefined' ? navigator.language : '',
+          timestamp: new Date().toISOString(),
         },
       }),
     });
@@ -194,26 +261,30 @@ export async function initializeTokens(sessionToken?: string, cookieId?: string)
       return getDefaultTokenStatus();
     }
 
-    // Ensure proper token status structure
+    // Ensure proper token status structure with validation
     const tokenStatus = {
-      tokensUsed: result.tokensUsed || 0,
-      tokensRemaining: result.tokensRemaining || 10000,
+      tokensUsed: typeof result.tokensUsed === 'number' ? result.tokensUsed : 0,
+      tokensRemaining: typeof result.tokensRemaining === 'number' ? result.tokensRemaining : 10000,
       resetAt: result.resetAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      timeUntilReset: result.timeUntilReset || 24 * 60 * 60 * 1000,
-      canUseTokens: (result.tokensRemaining || 10000) > 0,
+      timeUntilReset: typeof result.timeUntilReset === 'number' ? result.timeUntilReset : 24 * 60 * 60 * 1000,
+      canUseTokens: Boolean(result.tokensRemaining > 0),
     };
 
-    // Update local cache
-    const cache = getLocalCache();
-    if (cache) {
-      cache.tokenStatus = tokenStatus;
-      cache.lastSync = new Date().toISOString();
-      setLocalCache(cache);
+    // Update local cache safely
+    try {
+      const cache = getLocalCache();
+      if (cache) {
+        cache.tokenStatus = tokenStatus;
+        cache.lastSync = new Date().toISOString();
+        setLocalCache(cache);
+      }
+    } catch (cacheError) {
+      console.warn('Failed to update cache with token status:', cacheError);
     }
 
     return tokenStatus;
   } catch (error) {
-    console.error('Failed to initialize tokens:', error);
+    console.warn('Failed to initialize tokens:', error);
     return getDefaultTokenStatus();
   }
 }
@@ -254,29 +325,42 @@ export async function getTokenStatus(sessionToken?: string): Promise<TokenStatus
       return cache?.tokenStatus || getDefaultTokenStatus();
     }
 
-    // Update local cache
-    if (cache) {
-      cache.tokenStatus = result;
-      cache.lastSync = new Date().toISOString();
-      setLocalCache(cache);
-    } else {
-      // Create new cache entry
-      const newCache: SessionCache = {
-        session: {
-          sessionToken: token,
-          createdAt: new Date().toISOString(),
-          lastAccessed: new Date().toISOString(),
-        },
-        queryResponses: [],
-        tokenStatus: result,
-        lastSync: new Date().toISOString(),
-      };
-      setLocalCache(newCache);
+    // Validate and normalize result
+    const tokenStatus = {
+      tokensUsed: typeof result.tokensUsed === 'number' ? result.tokensUsed : 0,
+      tokensRemaining: typeof result.tokensRemaining === 'number' ? result.tokensRemaining : 10000,
+      resetAt: result.resetAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      timeUntilReset: typeof result.timeUntilReset === 'number' ? result.timeUntilReset : 24 * 60 * 60 * 1000,
+      canUseTokens: Boolean(result.tokensRemaining > 0),
+    };
+
+    // Update local cache safely
+    try {
+      if (cache) {
+        cache.tokenStatus = tokenStatus;
+        cache.lastSync = new Date().toISOString();
+        setLocalCache(cache);
+      } else {
+        // Create new cache entry
+        const newCache: SessionCache = {
+          session: {
+            sessionToken: token,
+            createdAt: new Date().toISOString(),
+            lastAccessed: new Date().toISOString(),
+          },
+          queryResponses: [],
+          tokenStatus: tokenStatus,
+          lastSync: new Date().toISOString(),
+        };
+        setLocalCache(newCache);
+      }
+    } catch (cacheError) {
+      console.warn('Failed to update cache:', cacheError);
     }
 
-    return result;
+    return tokenStatus;
   } catch (error) {
-    console.error('Failed to get token status:', error);
+    console.warn('Failed to get token status:', error);
 
     // Return cached data if available
     const cache = getLocalCache();
@@ -301,6 +385,15 @@ export async function consumeTokens(
       };
     }
 
+    if (typeof tokensToConsume !== 'number' || tokensToConsume < 0) {
+      console.warn('Invalid token consumption amount:', tokensToConsume);
+      return {
+        success: false,
+        tokensRemaining: 0,
+        error: 'Invalid token amount',
+      };
+    }
+
     const result = await apiCall('/api/tokens/manage', {
       method: 'PUT',
       body: JSON.stringify({
@@ -321,26 +414,30 @@ export async function consumeTokens(
       };
     }
 
-    // Update local cache
-    const cache = getLocalCache();
-    if (cache) {
-      cache.tokenStatus = {
-        tokensUsed: result.tokensUsed,
-        tokensRemaining: result.tokensRemaining,
-        resetAt: result.resetAt,
-        timeUntilReset: new Date(result.resetAt).getTime() - Date.now(),
-        canUseTokens: result.tokensRemaining > 0,
-      };
-      cache.lastSync = new Date().toISOString();
-      setLocalCache(cache);
+    // Update local cache safely
+    try {
+      const cache = getLocalCache();
+      if (cache) {
+        cache.tokenStatus = {
+          tokensUsed: typeof result.tokensUsed === 'number' ? result.tokensUsed : 0,
+          tokensRemaining: typeof result.tokensRemaining === 'number' ? result.tokensRemaining : 0,
+          resetAt: result.resetAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+          timeUntilReset: new Date(result.resetAt).getTime() - Date.now(),
+          canUseTokens: Boolean(result.tokensRemaining > 0),
+        };
+        cache.lastSync = new Date().toISOString();
+        setLocalCache(cache);
+      }
+    } catch (cacheError) {
+      console.warn('Failed to update cache after token consumption:', cacheError);
     }
 
     return {
       success: true,
-      tokensRemaining: result.tokensRemaining,
+      tokensRemaining: typeof result.tokensRemaining === 'number' ? result.tokensRemaining : 0,
     };
   } catch (error) {
-    console.error('Failed to consume tokens:', error);
+    console.warn('Failed to consume tokens:', error);
 
     // Check if it's an insufficient tokens error
     if (error instanceof Error && (error.message.includes('403') || error.message.includes('Insufficient'))) {
@@ -375,7 +472,10 @@ export async function createSession(sessionToken?: string, cookieId?: string, me
       body: JSON.stringify({
         sessionToken: token,
         cookieId: cookie,
-        metadata,
+        metadata: {
+          ...metadata,
+          timestamp: new Date().toISOString(),
+        },
       }),
     });
 
@@ -385,17 +485,25 @@ export async function createSession(sessionToken?: string, cookieId?: string, me
     }
 
     // Initialize tokens for new session
-    await initializeTokens(token, cookie);
-
-    // Update local storage
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem(SESSION_STORAGE_KEY, token);
-      localStorage.setItem(COOKIE_STORAGE_KEY, cookie);
+    try {
+      await initializeTokens(token, cookie);
+    } catch (tokenError) {
+      console.warn('Failed to initialize tokens after session creation:', tokenError);
     }
 
-    return result.success || false;
+    // Update local storage safely
+    try {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(SESSION_STORAGE_KEY, token);
+        localStorage.setItem(COOKIE_STORAGE_KEY, cookie);
+      }
+    } catch (storageError) {
+      console.warn('Failed to update local storage:', storageError);
+    }
+
+    return Boolean(result.success);
   } catch (error) {
-    console.error('Failed to create session:', error);
+    console.warn('Failed to create session:', error);
     return false;
   }
 }
@@ -407,8 +515,8 @@ export async function saveQueryResponse(
   metadata: Record<string, any> = {}
 ): Promise<boolean> {
   try {
-    if (!sessionToken) {
-      console.warn('No session token provided for query response save');
+    if (!sessionToken || !query || !response) {
+      console.warn('Missing required parameters for query response save');
       return false;
     }
 
@@ -434,30 +542,40 @@ export async function saveQueryResponse(
       },
     };
 
-    if (cache) {
-      cache.queryResponses.push(queryResponse);
-      cache.lastSync = new Date().toISOString();
-      setLocalCache(cache);
+    // Update cache safely
+    try {
+      if (cache) {
+        cache.queryResponses.push(queryResponse);
+        cache.lastSync = new Date().toISOString();
+        setLocalCache(cache);
+      }
+    } catch (cacheError) {
+      console.warn('Failed to update local cache:', cacheError);
     }
 
     // Save to remote database
-    const result = await apiCall('/api/database/session', {
-      method: 'PUT',
-      body: JSON.stringify({
-        sessionToken,
-        query,
-        response,
-        metadata: {
-          ...metadata,
-          estimatedTokens,
-        },
-      }),
-    });
+    try {
+      const result = await apiCall('/api/database/session', {
+        method: 'PUT',
+        body: JSON.stringify({
+          sessionToken,
+          query,
+          response,
+          metadata: {
+            ...metadata,
+            estimatedTokens,
+          },
+        }),
+      });
 
-    return result?.success || true; // Return true if local cache was updated
+      return Boolean(result?.success);
+    } catch (apiError) {
+      console.warn('Failed to save to remote database:', apiError);
+      return true; // Still return true if local cache was updated
+    }
   } catch (error) {
     console.error('Failed to save query response:', error);
-    return true; // Still return true if local cache was updated
+    return false;
   }
 }
 
@@ -471,7 +589,7 @@ export async function getSessionHistory(sessionToken: string): Promise<QueryResp
     // Try local cache first
     const cache = getLocalCache();
     if (cache && cache.session.sessionToken === sessionToken) {
-      return cache.queryResponses;
+      return cache.queryResponses || [];
     }
 
     // Fetch from remote database
@@ -482,17 +600,28 @@ export async function getSessionHistory(sessionToken: string): Promise<QueryResp
       return cache?.queryResponses || [];
     }
 
-    // Update local cache
-    const newCache: SessionCache = {
-      session: result.session,
-      queryResponses: result.queryResponses,
-      lastSync: new Date().toISOString(),
-    };
-    setLocalCache(newCache);
+    // Validate result structure
+    const queryResponses = Array.isArray(result.queryResponses) ? result.queryResponses : [];
 
-    return result.queryResponses;
+    // Update local cache safely
+    try {
+      const newCache: SessionCache = {
+        session: result.session || {
+          sessionToken,
+          createdAt: new Date().toISOString(),
+          lastAccessed: new Date().toISOString(),
+        },
+        queryResponses,
+        lastSync: new Date().toISOString(),
+      };
+      setLocalCache(newCache);
+    } catch (cacheError) {
+      console.warn('Failed to update cache with session history:', cacheError);
+    }
+
+    return queryResponses;
   } catch (error) {
-    console.error('Failed to get session history:', error);
+    console.warn('Failed to get session history:', error);
 
     // Return cached data if available
     const cache = getLocalCache();
@@ -514,9 +643,9 @@ export async function sessionExists(sessionToken: string): Promise<boolean> {
 
     // Check remote database
     const result = await apiCall(`/api/database/session?sessionToken=${encodeURIComponent(sessionToken)}`);
-    return !!result;
+    return Boolean(result);
   } catch (error) {
-    console.error('Failed to check session existence:', error);
+    console.warn('Failed to check session existence:', error);
     return false;
   }
 }
@@ -529,32 +658,44 @@ export async function recoverFromPostgreSQL(sessionToken: string): Promise<boole
 
     const result = await apiCall(`/api/database/session?sessionToken=${encodeURIComponent(sessionToken)}`);
 
-    if (!result) {
+    if (!result || !result.session) {
       return false;
     }
 
     // Update local cache with recovered data
-    const newCache: SessionCache = {
-      session: result.session,
-      queryResponses: result.queryResponses,
-      lastSync: new Date().toISOString(),
-    };
-    setLocalCache(newCache);
+    try {
+      const newCache: SessionCache = {
+        session: result.session,
+        queryResponses: Array.isArray(result.queryResponses) ? result.queryResponses : [],
+        lastSync: new Date().toISOString(),
+      };
+      setLocalCache(newCache);
+    } catch (cacheError) {
+      console.warn('Failed to update cache with recovered data:', cacheError);
+    }
 
-    // Update session storage
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem(SESSION_STORAGE_KEY, result.session.sessionToken);
-      if (result.session.cookieId) {
-        localStorage.setItem(COOKIE_STORAGE_KEY, result.session.cookieId);
+    // Update session storage safely
+    try {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(SESSION_STORAGE_KEY, result.session.sessionToken);
+        if (result.session.cookieId) {
+          localStorage.setItem(COOKIE_STORAGE_KEY, result.session.cookieId);
+        }
       }
+    } catch (storageError) {
+      console.warn('Failed to update storage after recovery:', storageError);
     }
 
     // Initialize token status
-    await initializeTokens(result.session.sessionToken, result.session.cookieId);
+    try {
+      await initializeTokens(result.session.sessionToken, result.session.cookieId);
+    } catch (tokenError) {
+      console.warn('Failed to initialize tokens after recovery:', tokenError);
+    }
 
     return true;
   } catch (error) {
-    console.error('Failed to recover from PostgreSQL:', error);
+    console.warn('Failed to recover from PostgreSQL:', error);
     return false;
   }
 }
@@ -567,65 +708,85 @@ export async function recoverFromCookieId(cookieId: string): Promise<boolean> {
 
     const result = await apiCall(`/api/database/session?cookieId=${encodeURIComponent(cookieId)}`);
 
-    if (!result) {
+    if (!result || !result.session) {
       return false;
     }
 
     // Update local cache with recovered data
-    const newCache: SessionCache = {
-      session: result.session,
-      queryResponses: result.queryResponses,
-      lastSync: new Date().toISOString(),
-    };
-    setLocalCache(newCache);
+    try {
+      const newCache: SessionCache = {
+        session: result.session,
+        queryResponses: Array.isArray(result.queryResponses) ? result.queryResponses : [],
+        lastSync: new Date().toISOString(),
+      };
+      setLocalCache(newCache);
+    } catch (cacheError) {
+      console.warn('Failed to update cache with recovered data:', cacheError);
+    }
 
-    // Update session storage
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem(SESSION_STORAGE_KEY, result.session.sessionToken);
-      localStorage.setItem(COOKIE_STORAGE_KEY, result.session.cookieId);
+    // Update session storage safely
+    try {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem(SESSION_STORAGE_KEY, result.session.sessionToken);
+        localStorage.setItem(COOKIE_STORAGE_KEY, result.session.cookieId);
+      }
+    } catch (storageError) {
+      console.warn('Failed to update storage after recovery:', storageError);
     }
 
     // Initialize token status
-    await initializeTokens(result.session.sessionToken, result.session.cookieId);
+    try {
+      await initializeTokens(result.session.sessionToken, result.session.cookieId);
+    } catch (tokenError) {
+      console.warn('Failed to initialize tokens after recovery:', tokenError);
+    }
 
     return true;
   } catch (error) {
-    console.error('Failed to recover from cookie ID:', error);
+    console.warn('Failed to recover from cookie ID:', error);
     return false;
   }
 }
 
-// Initialize database (no-op for client-side)
+// Initialize database (improved error handling)
 export async function initializeDatabase(): Promise<void> {
   // Only run in browser environment
   if (typeof window === 'undefined') return;
 
-  // Ensure session tokens are set
-  const sessionToken = getSessionToken();
-  const cookieId = getCookieId();
+  try {
+    // Ensure session tokens are set
+    const sessionToken = getSessionToken();
+    const cookieId = getCookieId();
 
-  if (!sessionToken || !cookieId) {
-    console.warn('Failed to initialize session tokens');
-    return;
-  }
+    if (!sessionToken) {
+      console.warn('Failed to initialize session token');
+      return;
+    }
 
-  // Try to recover session if we have identifiers but no cache
-  const cache = getLocalCache();
-  if (!cache) {
-    try {
-      const recovered = await recoverFromPostgreSQL(sessionToken);
-      if (!recovered) {
-        // Create new session if recovery fails
+    // Try to recover session if we have identifiers but no cache
+    const cache = getLocalCache();
+    if (!cache) {
+      try {
+        const recovered = await recoverFromPostgreSQL(sessionToken);
+        if (!recovered) {
+          // Create new session if recovery fails
+          await createSession(sessionToken, cookieId);
+        }
+      } catch (error) {
+        console.warn('Database initialization failed, creating new session:', error);
+        // Create new session as fallback
         await createSession(sessionToken, cookieId);
       }
-    } catch (error) {
-      console.error('Database initialization failed:', error);
-      // Create new session as fallback
-      await createSession(sessionToken, cookieId);
+    } else {
+      // Initialize tokens for existing session
+      try {
+        await initializeTokens(sessionToken, cookieId);
+      } catch (error) {
+        console.warn('Failed to initialize tokens for existing session:', error);
+      }
     }
-  } else {
-    // Initialize tokens for existing session
-    await initializeTokens(sessionToken, cookieId);
+  } catch (error) {
+    console.error('Database initialization failed:', error);
   }
 }
 
