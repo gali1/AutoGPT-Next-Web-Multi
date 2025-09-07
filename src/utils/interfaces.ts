@@ -52,7 +52,7 @@ export interface SessionInfo {
 
 export interface WebSearchRequest {
   query: string;
-  provider: "google" | "serp";
+  provider: "google"; // Removed "serp" option
   maxResults?: number;
   language?: string;
 }

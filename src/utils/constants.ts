@@ -133,12 +133,13 @@ export const DEFAULT_TEMPERATURE = 0.9 as const;
 export const DEMO_TOKEN_LIMIT = 10000 as const;
 export const TOKEN_RESET_HOURS = 24 as const;
 
-// Enhanced Web Search Configuration with token optimization
+// Enhanced Web Search Configuration - Google Only
 export const WEB_SEARCH_CONFIG = {
   MAX_RESULTS: 5,
-  SNIPPET_LENGTH: 150, // Optimized for token efficiency
+  SNIPPET_LENGTH: 200, // Increased for better context
   TIMEOUT: 8000,
-  MAX_TOTAL_CONTENT_LENGTH: 800, // Total content limit from all snippets
-  MIN_SNIPPET_LENGTH: 50, // Minimum useful snippet length
-  MAX_SEARCH_RESULTS_FOR_LLM: 3, // Maximum results to send to LLM
+  MAX_TOTAL_CONTENT_LENGTH: 1200, // Increased for more comprehensive search data
+  MIN_SNIPPET_LENGTH: 50,
+  MAX_SEARCH_RESULTS_FOR_LLM: 3,
+  GOOGLE_SEARCH_ENGINE: "google", // Only Google supported
 } as const;

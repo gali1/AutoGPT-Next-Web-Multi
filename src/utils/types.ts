@@ -15,7 +15,7 @@ export type ModelSettings = {
   openrouterApiKey?: string;
   cohereApiKey?: string;
   enableWebSearch?: boolean;
-  webSearchProvider?: "google" | "serp";
+  webSearchProvider?: "google"; // Removed "serp" option
 };
 
 export type GuestSettings = {

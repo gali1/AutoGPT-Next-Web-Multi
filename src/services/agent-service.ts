@@ -19,9 +19,9 @@ export const DefaultAnalysis: Analysis = {
 // Enhanced web search configuration for token optimization
 const OPTIMIZED_WEB_SEARCH_CONFIG = {
   MAX_RESULTS: 5,
-  SNIPPET_LENGTH: 150,
+  SNIPPET_LENGTH: 200,
   TIMEOUT: 8000,
-  MAX_TOTAL_CONTENT_LENGTH: 800,
+  MAX_TOTAL_CONTENT_LENGTH: 1200,
   MIN_SNIPPET_LENGTH: 50,
 };
 
@@ -34,17 +34,14 @@ function constructApiUrl(endpoint: string, params?: Record<string, string>): str
   });
 
   try {
-    // Handle already absolute URLs
     if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
       logger.urlConstruction(`URL already absolute`, { endpoint });
       return endpoint;
     }
 
-    // Clean endpoint
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
     logger.urlConstruction(`Cleaned endpoint`, { cleanEndpoint });
 
-    // Add query parameters if provided
     let finalUrl = cleanEndpoint;
     if (params && Object.keys(params).length > 0) {
       const searchParams = new URLSearchParams();
@@ -59,14 +56,11 @@ function constructApiUrl(endpoint: string, params?: Record<string, string>): str
       }
     }
 
-    // Environment detection for absolute URL construction
     const isServerSide = typeof window === 'undefined';
 
     if (isServerSide) {
-      // Server-side: need absolute URLs for fetch
       let baseUrl = '';
 
-      // Try multiple environment variable sources for base URL
       if (env.NEXT_PUBLIC_VERCEL_URL) {
         baseUrl = env.NEXT_PUBLIC_VERCEL_URL.startsWith('http')
           ? env.NEXT_PUBLIC_VERCEL_URL
@@ -78,13 +72,10 @@ function constructApiUrl(endpoint: string, params?: Record<string, string>): str
       } else if (process.env.SITE_URL) {
         baseUrl = process.env.SITE_URL;
       } else {
-        // Development fallback
         baseUrl = 'http://localhost:3000';
       }
 
-      // Ensure baseUrl doesn't end with slash
       baseUrl = baseUrl.replace(/\/$/, '');
-
       const absoluteUrl = `${baseUrl}${finalUrl}`;
 
       logger.urlConstruction(`Server-side absolute URL constructed`, {
@@ -96,7 +87,6 @@ function constructApiUrl(endpoint: string, params?: Record<string, string>): str
 
       return absoluteUrl;
     } else {
-      // Client-side: relative URLs work fine
       logger.urlConstruction(`Client-side relative URL constructed`, {
         finalUrl,
         isServerSide: false
@@ -111,12 +101,10 @@ function constructApiUrl(endpoint: string, params?: Record<string, string>): str
       error: error instanceof Error ? error.message : String(error)
     });
 
-    // Enhanced fallback with environment detection
     const isServerSide = typeof window === 'undefined';
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
     if (isServerSide) {
-      // Server-side fallback with absolute URL
       const fallbackBase = 'http://localhost:3000';
       const fallbackUrl = `${fallbackBase}${cleanEndpoint}`;
 
@@ -127,7 +115,6 @@ function constructApiUrl(endpoint: string, params?: Record<string, string>): str
 
       return fallbackUrl;
     } else {
-      // Client-side fallback with relative URL
       logger.urlConstruction(`Fallback relative URL`, {
         fallbackUrl: cleanEndpoint,
         isServerSide: false
@@ -164,7 +151,15 @@ async function retryWithBackoff<T>(
       return result;
     } catch (error) {
       lastError = error as Error;
-      // ...
+      if (i < maxRetries - 1) {
+        const delay = baseDelay * Math.pow(2, i);
+        logger.warn(`${context} failed, retrying in ${delay}ms`, {
+          error: lastError.message,
+          attempt: i + 1,
+          maxRetries
+        });
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
   }
 
@@ -178,7 +173,6 @@ async function retryWithBackoff<T>(
     throw new Error('Unknown error');
   }
 }
-
 
 // Multi-provider LLM client with enhanced logging
 class MultiProviderLLM {
@@ -346,16 +340,14 @@ class MultiProviderLLM {
         requestId: this.requestId
       });
 
-      // Allow request to proceed if token check fails, unless it's a token-specific error
       if (error instanceof Error && (
         error.message.includes('token') ||
         error.message.includes('Demo token limit') ||
         error.message.includes('Insufficient demo tokens')
       )) {
-        throw error; // Re-throw token-specific errors
+        throw error;
       }
 
-      // For other errors (like URL/network issues), log but continue
       logger.warn('Token check failed but continuing with request', {
         error: error instanceof Error ? error.message : String(error),
         requestId: this.requestId
@@ -934,98 +926,96 @@ class MultiProviderLLM {
   }
 }
 
-// Enhanced web search functionality with logging
-async function performWebSearch(query: string, modelSettings: ModelSettings): Promise<WebSearchResult[]> {
-  if (!modelSettings.enableWebSearch) {
-    logger.search('Web search disabled', { query });
-    return [];
-  }
-
-  const searchProvider = modelSettings.webSearchProvider || "google";
-
-  logger.search(`Starting ${searchProvider} search`, {
-    query,
-    provider: searchProvider
-  });
-
-  try {
-    if (searchProvider === "google") {
-      return await performOptimizedGoogleSearch(query);
-    } else if (searchProvider === "serp") {
-      return await performOptimizedSerpSearch(query);
-    }
-    return [];
-  } catch (error) {
-    logger.error("Web search error", {
-      error: error instanceof Error ? error.message : String(error),
-      query,
-      provider: searchProvider
-    });
-    return [];
-  }
-}
-
-async function performOptimizedGoogleSearch(query: string): Promise<WebSearchResult[]> {
+// Enhanced Google search functionality with comprehensive logging
+async function performGoogleSearch(query: string): Promise<WebSearchResult[]> {
   const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
   const engineId = process.env.GOOGLE_SEARCH_ENGINE_ID;
 
+  logger.search(`Google search initiated`, {
+    query: query.substring(0, 100),
+    hasApiKey: !!apiKey,
+    hasEngineId: !!engineId
+  });
+
   if (!apiKey || !engineId) {
+    logger.error("Google Search API credentials not configured", {
+      hasApiKey: !!apiKey,
+      hasEngineId: !!engineId
+    });
     throw new Error("Google Search API credentials not configured");
   }
 
   const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${engineId}&q=${encodeURIComponent(query)}&num=${OPTIMIZED_WEB_SEARCH_CONFIG.MAX_RESULTS}`;
+
+  logger.search(`Making Google API request`, {
+    url: url.replace(apiKey, 'REDACTED'),
+    query,
+    maxResults: OPTIMIZED_WEB_SEARCH_CONFIG.MAX_RESULTS
+  });
 
   const response = await fetch(url, {
     signal: AbortSignal.timeout(OPTIMIZED_WEB_SEARCH_CONFIG.TIMEOUT),
   });
 
   if (!response.ok) {
+    logger.error(`Google Search API error`, {
+      status: response.status,
+      statusText: response.statusText,
+      query
+    });
     throw new Error(`Google Search API error: ${response.statusText}`);
   }
 
   const data = await response.json();
 
+  logger.search(`Google API response received`, {
+    totalResults: data.searchInformation?.totalResults || 0,
+    itemCount: data.items?.length || 0,
+    query
+  });
+
+  // Log the raw search data for verification
+  console.log('🔍 GOOGLE SEARCH RESULTS - RAW DATA:');
+  console.log('Query:', query);
+  console.log('Total Results:', data.searchInformation?.totalResults || 0);
+  console.log('Items Count:', data.items?.length || 0);
+
+  if (data.items && Array.isArray(data.items)) {
+    data.items.forEach((item: any, index: number) => {
+      console.log(`\n--- Result ${index + 1} ---`);
+      console.log('Title:', item.title);
+      console.log('URL:', item.link);
+      console.log('Snippet:', item.snippet);
+      console.log('Display Link:', item.displayLink);
+    });
+  }
+
   const results = (data.items || []).map((item: any) => ({
-    title: item.title,
-    url: item.link,
+    title: item.title || 'No title',
+    url: item.link || '',
     snippet: item.snippet?.substring(0, OPTIMIZED_WEB_SEARCH_CONFIG.SNIPPET_LENGTH) || "",
     source: "google",
   }));
 
-  return optimizeSearchResults(results);
-}
+  const optimizedResults = optimizeSearchResults(results);
 
-async function performOptimizedSerpSearch(query: string): Promise<WebSearchResult[]> {
-  const apiKey = process.env.SERP_API_KEY;
-
-  if (!apiKey) {
-    throw new Error("SERP API key not configured");
-  }
-
-  const response = await fetch("https://google.serper.dev/search", {
-    method: "POST",
-    headers: {
-      "X-API-KEY": apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ q: query, num: OPTIMIZED_WEB_SEARCH_CONFIG.MAX_RESULTS }),
-    signal: AbortSignal.timeout(OPTIMIZED_WEB_SEARCH_CONFIG.TIMEOUT),
+  logger.search(`Search results processed`, {
+    originalCount: results.length,
+    optimizedCount: optimizedResults.length,
+    query
   });
 
-  if (!response.ok) {
-    throw new Error(`SERP API error: ${response.statusText}`);
-  }
+  // Log optimized results
+  console.log('\n🔍 GOOGLE SEARCH RESULTS - OPTIMIZED:');
+  optimizedResults.forEach((result, index) => {
+    console.log(`\n--- Optimized Result ${index + 1} ---`);
+    console.log('Title:', result.title);
+    console.log('URL:', result.url);
+    console.log('Snippet:', result.snippet);
+    console.log('Source:', result.source);
+  });
 
-  const data = await response.json();
-
-  const results = (data.organic || []).map((item: any) => ({
-    title: item.title,
-    url: item.link,
-    snippet: item.snippet?.substring(0, OPTIMIZED_WEB_SEARCH_CONFIG.SNIPPET_LENGTH) || "",
-    source: "serp",
-  }));
-
-  return optimizeSearchResults(results);
+  return optimizedResults;
 }
 
 function optimizeSearchResults(results: WebSearchResult[]): WebSearchResult[] {
@@ -1090,6 +1080,39 @@ function calculateSnippetScore(snippet: string): number {
   }
 
   return score;
+}
+
+// Create formatted search context for prompt integration
+function createSearchContext(searchResults: WebSearchResult[]): string {
+  if (!searchResults || searchResults.length === 0) {
+    return "No web search results available.";
+  }
+
+  const contextParts: string[] = [
+    "=== CURRENT WEB SEARCH RESULTS ===",
+    ""
+  ];
+
+  searchResults.forEach((result, index) => {
+    const entry = `RESULT ${index + 1}:
+TITLE: ${result.title}
+URL: ${result.url}
+CONTENT: ${result.snippet}
+SOURCE: ${result.source}`;
+
+    contextParts.push(entry);
+    contextParts.push(""); // Empty line between results
+  });
+
+  contextParts.push("=== END WEB SEARCH RESULTS ===");
+
+  const fullContext = contextParts.join('\n');
+
+  // Log the formatted context
+  console.log('\n🔍 FORMATTED SEARCH CONTEXT FOR PROMPT:');
+  console.log(fullContext);
+
+  return fullContext;
 }
 
 // Agent service implementation with enhanced logging
@@ -1237,7 +1260,6 @@ async function analyzeTaskAgent(
 ): Promise<Analysis> {
   const requestId = Math.random().toString(36).substring(2, 10);
 
-  // Log operation
   logger.taskOperation('analyze-task', requestId, {
     task: task.substring(0, 100),
     goal: goal.substring(0, 50),
@@ -1248,7 +1270,6 @@ async function analyzeTaskAgent(
     const llm = new MultiProviderLLM(modelSettings, sessionToken);
     const actions = ["reason", "search"];
 
-    // Construct prompt
     const prompt = `You are analyzing a task to determine the best approach.
 
 GOAL: "${goal}"
@@ -1266,7 +1287,6 @@ Respond with ONLY a JSON object in this exact format:
 OR
 {"action": "reason", "arg": "reasoning approach description"}`
 
-    // Call the LLM
     const completion = await llm.call(prompt, {
       goal,
       actions: actions.join(", "),
@@ -1274,20 +1294,16 @@ OR
       action: 'analyze_task',
     });
 
-    // Log response
     logger.debug("Analysis completion received", {
       completion: completion.substring(0, 200),
       requestId
     });
 
-    // Parse JSON safely
     let analysisResult: Analysis | null = null;
-    const match = completion.match(/\{[^}]+\}/); // Extract JSON object
+    const match = completion.match(/\{[^}]+\}/);
 
     if (match) {
       let jsonString = match[0];
-
-      // Sanitize the string to fix unquoted string values
       jsonString = sanitizeJsonString(jsonString);
 
       try {
@@ -1302,25 +1318,21 @@ OR
     }
 
     if (analysisResult && analysisResult.action && analysisResult.arg) {
-      // Log success
       logger.taskOperation('analysis-complete', requestId, {
         action: analysisResult.action,
         arg: analysisResult.arg.substring(0, 50)
       });
       return analysisResult;
     } else {
-      // Fallback if parsing failed or missing fields
       throw new Error("Invalid analysis response");
     }
   } catch (e) {
-    // Log error
     logger.error("Error analyzing task", {
       error: e instanceof Error ? e.message : String(e),
       task: task.substring(0, 50),
       requestId
     });
 
-    // Check for keywords to determine fallback
     const taskLower = task.toLowerCase();
     const searchKeywords = ['current', 'latest', 'recent', 'today', 'now', 'update', 'news', 'price', 'stock', 'weather', '2024', '2025'];
 
@@ -1335,12 +1347,8 @@ OR
   }
 }
 
-// Helper function to sanitize JSON string
 function sanitizeJsonString(str: string): string {
-  // Replace unquoted "arg" value
-  // e.g., "arg":2024 presidential results -> "arg":"2024 presidential results"
   return str.replace(/"arg":\s*([^\s",}][^,}]*)/g, (match, p1) => {
-    // If already quoted, do nothing
     if (/^".*"$/.test(p1.trim())) {
       return match;
     }
@@ -1367,36 +1375,45 @@ async function executeTaskAgent(
 
   if (analysis.action === "search" && modelSettings.enableWebSearch) {
     try {
-      const searchResults = await performWebSearch(analysis.arg, modelSettings);
+      logger.search(`Executing task with web search`, {
+        query: analysis.arg,
+        task: task.substring(0, 50),
+        requestId
+      });
+
+      const searchResults = await performGoogleSearch(analysis.arg);
 
       if (searchResults.length > 0) {
-        const searchContext = createOptimizedSearchContext(searchResults);
+        const searchContext = createSearchContext(searchResults);
 
         const llm = new MultiProviderLLM(modelSettings, sessionToken);
+
+        // Enhanced prompt with integrated search results
         const prompt = `Answer in "${customLanguage}" language.
 
 GOAL: "${goal}"
 TASK: "${task}"
 SEARCH QUERY: "${analysis.arg}"
 
-CURRENT WEB SEARCH RESULTS:
-${searchContext.content}
+${searchContext}
 
 INSTRUCTIONS:
-1. Combine the search results with your existing knowledge
-2. Focus on the most recent and relevant information from the search results
-3. Provide a comprehensive response that integrates both web findings and your knowledge
-4. Be specific and cite key facts from the search results
-5. If coding is required, provide code in markdown format
+1. Use the web search results above to provide current, accurate information
+2. Integrate the search findings with your existing knowledge
+3. Focus on the most recent and relevant information from the search results
+4. Be specific and reference key facts from the search results
+5. Provide a comprehensive response that directly addresses the task
+6. If coding is required, provide code in markdown format
+7. Always mention when information comes from the web search results
 
-Provide a detailed response that directly addresses the task using both the search results and your knowledge base.`;
+Your response should be detailed, current, and directly address the task using both the search results and your knowledge base.`;
 
         const completion = await llm.call(prompt, {
           goal,
           task,
           customLanguage,
           searchQuery: analysis.arg,
-          searchContext: searchContext.content,
+          searchContext,
           action: 'execute_task_with_search',
         });
 
@@ -1405,7 +1422,15 @@ Provide a detailed response that directly addresses the task using both the sear
           responseLength: completion.length
         });
 
-        return `${completion}\n\n**Sources:** ${searchContext.sources}`;
+        // Create sources list
+        const sources = searchResults.map((result, index) => `${index + 1}. ${result.url}`).join('\n');
+
+        return `${completion}\n\n**Sources from web search:**\n${sources}`;
+      } else {
+        logger.warn("No search results found, falling back to reasoning", {
+          query: analysis.arg,
+          requestId
+        });
       }
     } catch (error) {
       logger.error("Search execution error", {
@@ -1452,24 +1477,6 @@ Provide a comprehensive response that directly addresses the task requirements u
     });
     return `Task completed: ${task}\n\nNote: Executed with basic reasoning due to API limitations.`;
   }
-}
-
-function createOptimizedSearchContext(searchResults: WebSearchResult[]): { content: string; sources: string } {
-  const contextParts: string[] = [];
-  const sources: string[] = [];
-
-  searchResults.forEach((result, index) => {
-    const entry = `${index + 1}. **${result.title.substring(0, 80)}${result.title.length > 80 ? '...' : ''}**
-   ${result.snippet}`;
-
-    contextParts.push(entry);
-    sources.push(result.url);
-  });
-
-  return {
-    content: contextParts.join('\n\n'),
-    sources: sources.join(', ')
-  };
 }
 
 async function createTasksAgent(

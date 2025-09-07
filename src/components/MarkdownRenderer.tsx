@@ -9,7 +9,7 @@ import "highlight.js/styles/default.css";
 
 const MarkdownRenderer = ({ children }) => {
   // Handle undefined or null children with better error handling
-  if (!children) {
+  if (children === null || children === undefined) {
     return <div className="text-gray-400 italic">No content to display</div>;
   }
 
@@ -17,25 +17,33 @@ const MarkdownRenderer = ({ children }) => {
   let cleanContent: string;
   try {
     if (typeof children === 'string') {
-      cleanContent = children.trim();
+      cleanContent = children;
     } else if (typeof children === 'number') {
       cleanContent = String(children);
     } else if (React.isValidElement(children)) {
       cleanContent = extractTextFromNode(children);
+    } else if (Array.isArray(children)) {
+      cleanContent = children.map(child =>
+        typeof child === 'string' ? child : extractTextFromNode(child)
+      ).join('');
     } else {
-      cleanContent = String(children).trim();
+      cleanContent = String(children);
     }
   } catch (error) {
     console.warn('Error processing markdown content:', error);
     return <div className="text-yellow-400">Content could not be processed for display</div>;
   }
 
-  if (cleanContent.length === 0) {
+  // Only trim whitespace, don't reject content that might just be whitespace/formatting
+  const trimmedContent = cleanContent.trim();
+
+  // Only show "Empty content" if content is truly empty after trimming
+  if (trimmedContent.length === 0) {
     return <div className="text-gray-400 italic">Empty content</div>;
   }
 
   // Pre-process content to avoid parsing issues
-  const processedContent = preprocessMarkdownContent(cleanContent);
+  const processedContent = preprocessMarkdownContent(trimmedContent);
 
   return (
     <div className="markdown-container">

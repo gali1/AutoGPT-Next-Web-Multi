@@ -70,7 +70,6 @@ export const SettingsDialog: React.FC<{
 
   const keyIsValid = (key: string | undefined) => {
     if (!key) return false;
-    // Basic validation - check for minimum length and format
     return key.length > 20;
   };
 
@@ -238,32 +237,14 @@ export const SettingsDialog: React.FC<{
 
       {settings.enableWebSearch && (
         <div className="ml-6">
-          <label className="block text-sm font-medium mb-2">{t("search-provider")}</label>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              className={clsx(
-                "p-2 rounded-lg border-2 transition-all text-center",
-                (settings.webSearchProvider || "google") === "google"
-                  ? "border-[#1E88E5] bg-[#1E88E5]/20"
-                  : "border-white/20 hover:border-white/40"
-              )}
-              onClick={() => updateSettings("webSearchProvider", "google")}
-            >
-              Google
-            </button>
-            <button
-              type="button"
-              className={clsx(
-                "p-2 rounded-lg border-2 transition-all text-center",
-                settings.webSearchProvider === "serp"
-                  ? "border-[#1E88E5] bg-[#1E88E5]/20"
-                  : "border-white/20 hover:border-white/40"
-              )}
-              onClick={() => updateSettings("webSearchProvider", "serp")}
-            >
-              SERP
-            </button>
+          <div className="bg-blue-900/30 p-3 rounded-lg border border-blue-500/30">
+            <div className="flex items-center gap-2">
+              <FaSearch className="text-blue-400" />
+              <span className="text-blue-300 font-medium">Google Search</span>
+            </div>
+            <p className="text-blue-100 text-sm mt-1">
+              Web search is powered by Google Custom Search API for current and accurate information.
+            </p>
           </div>
         </div>
       )}

@@ -27,7 +27,7 @@ export const DEFAULT_SETTINGS: ModelSettings = {
   openrouterApiKey: "",
   cohereApiKey: "",
   enableWebSearch: false,
-  webSearchProvider: "google",
+  webSearchProvider: "google" as const, // Only Google supported
 };
 
 const loadSettings = (): ModelSettings => {
@@ -65,6 +65,11 @@ const loadSettings = (): ModelSettings => {
   // If no model or empty model, set default for provider
   if (!currentModel || currentModel.trim() === "") {
     defaultSettings.customModelName = DEFAULT_MODELS[currentProvider];
+  }
+
+  // Ensure webSearchProvider is always "google"
+  if (defaultSettings.webSearchProvider !== "google") {
+    defaultSettings.webSearchProvider = "google" as const;
   }
 
   // Reset to defaults if no API key and not guest mode
@@ -115,6 +120,9 @@ export function useSettings() {
       processedSettings.customModelName = DEFAULT_MODELS[processedSettings.llmProvider];
     }
 
+    // Ensure webSearchProvider is always "google"
+    processedSettings.webSearchProvider = "google" as const;
+
     // Reset to defaults if no API key and not guest mode (preserve certain settings)
     if (!hasValidApiKey(processedSettings) && !isGuestMode()) {
       const { customGuestKey, llmProvider, customModelName } = processedSettings;
@@ -131,9 +139,8 @@ export function useSettings() {
       processedSettings.enableWebSearch = false;
     }
 
-    if (!processedSettings.webSearchProvider) {
-      processedSettings.webSearchProvider = "google";
-    }
+    // Always ensure webSearchProvider is "google"
+    processedSettings.webSearchProvider = "google" as const;
 
     console.log("Final processed settings:", processedSettings);
 
@@ -158,10 +165,11 @@ export function useSettings() {
   const updateProvider = useCallback((provider: LLMProvider) => {
     console.log(`Updating provider from ${settings.llmProvider} to ${provider}`);
 
-    const newSettings = {
+    const newSettings: ModelSettings = {
       ...settings,
       llmProvider: provider,
       customModelName: DEFAULT_MODELS[provider], // Always update model when provider changes
+      webSearchProvider: "google" as const, // Ensure Google is always set
     };
 
     console.log(`Provider changed to ${provider}, setting model to ${DEFAULT_MODELS[provider]}`);
@@ -177,9 +185,10 @@ export function useSettings() {
       return;
     }
 
-    const newSettings = {
+    const newSettings: ModelSettings = {
       ...settings,
       customModelName: model,
+      webSearchProvider: "google" as const, // Ensure Google is always set
     };
 
     console.log(`Model changed to ${model}`);
